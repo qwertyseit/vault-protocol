@@ -1,0 +1,23 @@
+# Godot generated folders (do NOT commit or zip these)
+.godot/
+.import/
+*.tmp
+
+# Builds
+Builds/
+*.apk
+*.aab
+
+# Android signing keys (never commit)
+*.keystore
+*.jks
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Demo video (submitted in the ZIP, too big for git)
+Demo.mp4
+
+# Submission folder (ZIP for the LMS, not part of the repo)
+Submission/
