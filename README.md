@@ -58,7 +58,9 @@ Manual/                the Expert's technical manual (PDF)
 
 ## Team
 
-- **Adilseit Tuiyebay** — game code, touch input, UI, Android build, demo video
-- **Artemiy Kim** — puzzle rules, technical manual, playtesting and QA
+| Member | Role | Contribution |
+|---|---|---|
+| **Adilseit Tuiyebay** | Game development | Godot project, gameplay code, 3D vault and touch input, UI and feedback, Android build |
+| **Artemiy Kim** | Game design and documentation | Puzzle rules and mission balance, the Expert's technical manual (PDF), README and other documents, demo video, playtesting |
 
 Assignment 2 submission: tag [`v0.2-a2`](https://github.com/qwertyseit/vault-protocol/tree/v0.2-a2).
