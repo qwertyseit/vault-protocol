@@ -9,6 +9,11 @@
 # Sides of the vault:  FRONT = timer display,  RIGHT = Wires,  BACK = Button,
 #                      LEFT = Keypad (Mission 2),  TOP = Vault ID plate.
 # In the menu the same vault slowly spins behind the title (showcase mode).
+# Mission 3 adds the Combination Dial on the BOTTOM side.
+#
+# Also here: the pause menu (the game pauses by itself when the app goes to
+# the background; the Android back button pauses / goes back), the Settings
+# screen (saved on the phone) and the 3-page How to play screen.
 # -----------------------------------------------------------------------------
 extends Control
 
@@ -20,8 +25,10 @@ const Vault3D = preload("res://scripts/vault_3d.gd")
 const WiresModule = preload("res://scripts/wires_module.gd")
 const ButtonModule = preload("res://scripts/button_module.gd")
 const KeypadModule = preload("res://scripts/keypad_module.gd")
+const DialModule = preload("res://scripts/dial_module.gd")
+const GameSettings = preload("res://scripts/game_settings.gd")
 
-enum State { MENU, PLAYING, RESULT }
+enum State { MENU, PLAYING, PAUSED, RESULT }
 
 const MAX_STRIKES := 3
 const RESULT_DELAY := 0.9 # pause so players see their last action
@@ -69,6 +76,22 @@ var flash_rect: ColorRect
 var flash_alpha := 0.0
 var flash_color := Color.RED
 
+# ---- pause / settings / how to play ----
+var settings: GameSettings
+var pause_screen: Control
+var pause_caption: Label
+var pause_info: Label
+var settings_screen: Control
+var sound_toggle: Button
+var vibration_toggle: Button
+var spin_buttons: Array = []
+var howto_screen: Control
+var howto_pages: Array = []
+var howto_dots: Array = []
+var howto_page := 0
+var howto_back: Button
+var howto_next: Button
+
 
 # =============================================================================
 # Godot callbacks
@@ -80,14 +103,30 @@ func _ready() -> void:
 		if arg.begins_with("--seed="):
 			rng.seed = int(arg.substr(7))
 	DisplayServer.screen_set_keep_on(true) # players talk a lot :)
+	get_tree().quit_on_go_back = false # the Android back button pauses / goes back instead
+	settings = GameSettings.new()
+	settings.load_settings()
 	sfx = SoundFx.new()
 	sfx.name = "SoundFx"
 	add_child(sfx)
 
 	_build_ui()
+	_apply_settings()
 	get_viewport().size_changed.connect(_apply_layout)
 	_apply_layout()
 	show_menu()
+	if not settings.tutorial_seen:
+		open_howto() # first start: explain the game
+
+
+func _notification(what: int) -> void:
+	match what:
+		NOTIFICATION_APPLICATION_FOCUS_OUT, NOTIFICATION_APPLICATION_PAUSED:
+			# A call, the notification shade, another app: never lose time.
+			if state == State.PLAYING:
+				pause_game()
+		NOTIFICATION_WM_GO_BACK_REQUEST:
+			_on_back_button()
 
 
 func _process(delta: float) -> void:
@@ -116,6 +155,9 @@ func show_menu() -> void:
 	flow_token += 1
 	state = State.MENU
 	vault.interactive = false
+	pause_screen.visible = false
+	settings_screen.visible = false
+	vault.set_vault_hidden(false)
 	_clear_mission()
 	_build_showcase()
 	vault.set_showcase(true)
@@ -149,12 +191,19 @@ func start_mission(index: int) -> void:
 		_create_module(KeypadModule, Vault3D.Face.LEFT)
 	else:
 		_build_empty_face(Vault3D.Face.LEFT)
+	if mission["has_dial"]:
+		_create_module(DialModule, Vault3D.Face.BOTTOM)
+	else:
+		vault.show_sticker()
 	_update_disarmed_label()
 
 	show_status("Find the VAULT ID on top of the vault and read it to your Expert.", UI.MUTED)
 
 	menu_screen.visible = false
 	result_screen.visible = false
+	pause_screen.visible = false
+	settings_screen.visible = false
+	vault.set_vault_hidden(false)
 	game_screen.visible = true
 	_fade_in(game_screen)
 	vault.set_showcase(false)
@@ -200,6 +249,7 @@ func _build_showcase() -> void:
 	_build_display_face()
 	display_timer_label.text = "--:--"
 	_build_plate_face()
+	vault.show_sticker()
 	var demo := [[WiresModule, Vault3D.Face.RIGHT], [ButtonModule, Vault3D.Face.BACK], [KeypadModule, Vault3D.Face.LEFT]]
 	for d in demo:
 		var module: Control = (d[0] as GDScript).new()
@@ -219,7 +269,8 @@ func on_strike(_module: Control, message: String) -> void:
 	sfx.play("strike")
 	_flash(UI.BAD, 0.45)
 	vault.shake(1.0)
-	Input.vibrate_handheld(300)
+	if settings.vibration:
+		Input.vibrate_handheld(300)
 	show_status("%s\nSTRIKE %d / %d" % [message, strikes, MAX_STRIKES], UI.BAD)
 
 	if strikes >= MAX_STRIKES:
@@ -286,6 +337,143 @@ func _show_result_after_delay(won: bool, reason: String) -> void:
 	vault.set_active(false)
 	result_screen.visible = true
 	_fade_in(result_screen)
+
+
+# =============================================================================
+# Pause
+# =============================================================================
+func pause_game() -> void:
+	if state != State.PLAYING:
+		return
+	state = State.PAUSED # stops the timer and blocks the modules
+	vault.cancel_touch()
+	vault.interactive = false
+	vault.set_vault_hidden(true) # no studying the modules while the clock is stopped
+	vault.set_active(false)
+	pause_caption.text = "MISSION %d  •  %s" % [mission_index + 1, mission["subtitle"]]
+	pause_info.text = "TIME LEFT %s   •   STRIKES %d / %d" % [UI.format_time(time_left), strikes, MAX_STRIKES]
+	pause_screen.visible = true
+	_fade_in(pause_screen)
+	sfx.play("click")
+
+
+func resume_game() -> void:
+	if state != State.PAUSED:
+		return
+	pause_screen.visible = false
+	settings_screen.visible = false
+	vault.set_vault_hidden(false)
+	vault.set_active(true)
+	vault.interactive = true
+	state = State.PLAYING
+	sfx.play("click")
+
+
+## Android back button: closes the top screen, pauses, or leaves the game.
+func _on_back_button() -> void:
+	if howto_screen.visible:
+		close_howto()
+	elif settings_screen.visible:
+		close_settings()
+	elif state == State.PLAYING:
+		pause_game()
+	elif state == State.PAUSED:
+		resume_game()
+	elif state == State.RESULT:
+		if result_screen.visible:
+			show_menu()
+	else:
+		get_tree().quit()
+
+
+# =============================================================================
+# Settings
+# =============================================================================
+func _apply_settings() -> void:
+	AudioServer.set_bus_mute(AudioServer.get_bus_index("Master"), not settings.sound)
+	vault.rotate_speed = settings.rotate_speed()
+	_refresh_settings_ui()
+
+
+func open_settings() -> void:
+	_refresh_settings_ui()
+	settings_screen.visible = true
+	_fade_in(settings_screen)
+	sfx.play("click")
+
+
+func close_settings() -> void:
+	settings_screen.visible = false
+	settings.save_settings()
+	sfx.play("click")
+
+
+func _toggle_sound() -> void:
+	settings.sound = not settings.sound
+	_apply_settings()
+	sfx.play("good") # heard only when the sound was just turned on
+
+
+func _toggle_vibration() -> void:
+	settings.vibration = not settings.vibration
+	_apply_settings()
+	if settings.vibration:
+		Input.vibrate_handheld(80) # a short buzz shows it works
+	sfx.play("click")
+
+
+func _set_spin_speed(index: int) -> void:
+	settings.spin_speed = index
+	_apply_settings()
+	sfx.play("click")
+
+
+func _refresh_settings_ui() -> void:
+	if sound_toggle == null:
+		return
+	_style_toggle(sound_toggle, settings.sound)
+	_style_toggle(vibration_toggle, settings.vibration)
+	for i in spin_buttons.size():
+		var selected: bool = i == settings.spin_speed
+		UI.restyle_button(spin_buttons[i], UI.AMBER if selected else UI.PANEL_LIGHT, UI.DARK if selected else UI.TEXT, 18)
+
+
+func _style_toggle(b: Button, on: bool) -> void:
+	b.text = "ON" if on else "OFF"
+	UI.restyle_button(b, UI.GOOD if on else UI.SOCKET, UI.DARK if on else UI.TEXT, 18)
+
+
+# =============================================================================
+# How to play
+# =============================================================================
+func open_howto() -> void:
+	_show_howto_page(0)
+	howto_screen.visible = true
+	_fade_in(howto_screen)
+
+
+func close_howto() -> void:
+	howto_screen.visible = false
+	settings.tutorial_seen = true
+	settings.save_settings()
+	sfx.play("click")
+
+
+func _show_howto_page(index: int) -> void:
+	howto_page = clampi(index, 0, howto_pages.size() - 1)
+	for i in howto_pages.size():
+		(howto_pages[i] as Control).visible = i == howto_page
+		(howto_dots[i] as StyleBoxFlat).bg_color = UI.AMBER if i == howto_page else UI.SOCKET
+	howto_back.visible = howto_page > 0
+	howto_next.text = "GOT IT" if howto_page == howto_pages.size() - 1 else "NEXT"
+
+
+func _howto_next_pressed() -> void:
+	sfx.play("click")
+	if howto_page == howto_pages.size() - 1:
+		close_howto()
+	else:
+		_show_howto_page(howto_page + 1)
 
 
 func _count_solved() -> int:
@@ -408,6 +596,9 @@ func _build_ui() -> void:
 	_build_menu_screen()
 	_build_game_screen()
 	_build_result_screen()
+	_build_pause_screen()
+	_build_settings_screen()
+	_build_howto_screen() # on top of everything
 
 	flash_rect = UI.rect(self, "FlashOverlay", Color(1, 0, 0, 0), 0, 0, 1, 1)
 
@@ -440,29 +631,20 @@ func _build_menu_screen() -> void:
 	var stamp := UI.panel(t, "Stamp", Color(0.6, 0.1, 0.1, 0.15), 0.71, 0.908, 0.985, 0.938, 10, Color(0.9, 0.25, 0.25, 0.85), 4)
 	UI.caps(stamp, "Text", "TOP SECRET", 24, Color(1.0, 0.4, 0.4), HORIZONTAL_ALIGNMENT_CENTER, 0, 0, 1, 1, 4)
 	stamp.rotation = deg_to_rad(12.0)
+	UI.text(t, "Roles", "The Operator holds the phone  •  the Expert reads the manual", 26, UI.MUTED, HORIZONTAL_ALIGNMENT_CENTER, 0.03, 0.782, 0.97, 0.812)
 
-	# (the 3D vault spins here, between the logo and the cards)
+	# (the 3D vault spins here, between the logo and the buttons)
 
-	# --- Roles ---
-	_role_card(t, "Operator", "1", "OPERATOR", "Holds this phone. Turns the vault and does the actions.", 0.04, 0.485)
-	_role_card(t, "Expert", "2", "EXPERT", "Reads the PDF manual on another device.", 0.515, 0.96)
-	UI.text(t, "NoPeeking", "Don't look at each other's screens — just talk!", 28, UI.MUTED, HORIZONTAL_ALIGNMENT_CENTER, 0.03, 0.302, 0.97, 0.332)
+	# --- Help + settings ---
+	UI.button(t, "HowToButton", "HOW TO PLAY", 32, UI.PANEL_LIGHT, UI.TEXT, 0.05, 0.437, 0.49, 0.497, open_howto, 20)
+	UI.button(t, "SettingsButton", "SETTINGS", 32, UI.PANEL_LIGHT, UI.TEXT, 0.51, 0.437, 0.95, 0.497, open_settings, 20)
 
 	# --- Missions ---
 	for i in MissionData.count():
-		var y_max := 0.29 - i * 0.12
-		_mission_card(t, i, y_max - 0.105, y_max)
+		var y_max := 0.415 - i * 0.112
+		_mission_card(t, i, y_max - 0.1, y_max)
 
-	UI.caps(t, "Footer", "MANUAL REV. 1.1   •   MT-2401   •   PROTOTYPE", 22, Color(UI.MUTED, 0.7), HORIZONTAL_ALIGNMENT_CENTER, 0.03, 0.012, 0.97, 0.045, 3)
-
-
-func _role_card(parent: Control, card_name: String, number: String, title: String, body: String, x_min: float, x_max: float) -> void:
-	var card := UI.panel(parent, card_name + "Card", Color(UI.PANEL, 0.88), x_min, 0.34, x_max, 0.47, 22, UI.LINE, 2)
-	var badge := UI.circle(card, "Badge", UI.AMBER, 0.06, 0.60, 0.24, 0.92)
-	badge.set_border_width_all(0)
-	UI.text(card, "Number", number, 38, UI.DARK, HORIZONTAL_ALIGNMENT_CENTER, 0.06, 0.60, 0.24, 0.92, true)
-	UI.caps(card, "Title", title, 32, UI.AMBER, HORIZONTAL_ALIGNMENT_LEFT, 0.28, 0.60, 0.97, 0.92, 4)
-	UI.text(card, "Body", body, 27, UI.TEXT, HORIZONTAL_ALIGNMENT_LEFT, 0.07, 0.06, 0.95, 0.58)
+	UI.caps(t, "Footer", "MANUAL REV. 1.2   •   MT-2401   •   PROTOTYPE", 22, Color(UI.MUTED, 0.7), HORIZONTAL_ALIGNMENT_CENTER, 0.03, 0.012, 0.97, 0.045, 3)
 
 
 func _mission_card(parent: Control, index: int, y_min: float, y_max: float) -> void:
@@ -490,10 +672,15 @@ func _mission_card(parent: Control, index: int, y_min: float, y_max: float) -> v
 	UI.text(b, "Number", "%02d" % (index + 1), 92, UI.AMBER, HORIZONTAL_ALIGNMENT_CENTER, 0.03, 0.05, 0.21, 0.95, true)
 	UI.rect(b, "Divider", UI.LINE, 0.215, 0.18, 0.218, 0.82)
 	UI.text(b, "Title", m["subtitle"], 46, UI.TEXT, HORIZONTAL_ALIGNMENT_LEFT, 0.25, 0.48, 0.74, 0.92, true)
-	var modules_text := "WIRES  •  BUTTON  •  KEYPAD" if m["has_keypad"] else "WIRES  •  BUTTON"
+	var names := ["WIRES", "BUTTON"]
+	if m["has_keypad"]:
+		names.append("KEYPAD")
+	if m["has_dial"]:
+		names.append("DIAL")
+	var modules_text := "  •  ".join(PackedStringArray(names))
 	UI.caps(b, "Modules", modules_text, 24, UI.MUTED, HORIZONTAL_ALIGNMENT_LEFT, 0.25, 0.12, 0.80, 0.46, 3)
 	UI.text(b, "Time", UI.format_time(m["time_limit"]), 50, UI.AMBER, HORIZONTAL_ALIGNMENT_RIGHT, 0.72, 0.46, 0.95, 0.92, true)
-	# difficulty: 1 or 2 of 3 lights
+	# difficulty: 1, 2 or 3 of 3 lights
 	for k in 3:
 		var x := 0.80 + k * 0.05
 		var pip := UI.circle(b, "Pip%d" % k, UI.AMBER if k <= index else UI.SOCKET, x, 0.16, x + 0.035, 0.40)
@@ -509,7 +696,9 @@ func _build_game_screen() -> void:
 	var header_style: StyleBoxFlat = header.get_meta("style")
 	header_style.border_width_bottom = 4
 	header_style.border_color = UI.AMBER_DIM
-	UI.button(t, "MenuButton", "MENU", 32, UI.PANEL_LIGHT, UI.TEXT, 0.03, 0.918, 0.22, 0.988, show_menu, 18)
+	var pause_button := UI.button(t, "PauseButton", "", 10, UI.PANEL_LIGHT, UI.TEXT, 0.03, 0.918, 0.20, 0.988, pause_game, 18)
+	UI.rect(pause_button, "BarLeft", UI.TEXT, 0.33, 0.30, 0.44, 0.76) # the pause sign
+	UI.rect(pause_button, "BarRight", UI.TEXT, 0.56, 0.30, 0.67, 0.76)
 	var timer_box := UI.panel(t, "TimerBox", UI.DARK, 0.255, 0.915, 0.615, 0.99, 18, UI.AMBER_DIM, 3)
 	UI.text(timer_box, "Ghost", "88:88", 84, Color(UI.AMBER, 0.07), HORIZONTAL_ALIGNMENT_CENTER, 0, 0, 1, 1, true)
 	timer_label = UI.text(timer_box, "Timer", "00:00", 84, UI.AMBER, HORIZONTAL_ALIGNMENT_CENTER, 0, 0, 1, 1, true)
@@ -559,6 +748,137 @@ func _build_result_screen() -> void:
 	retry_button = UI.button(card, "RetryButton", "RETRY", 46, UI.AMBER, UI.DARK, 0.07, 0.315, 0.93, 0.425, func(): start_mission(mission_index))
 	next_mission_button = UI.button(card, "NextMissionButton", "NEXT MISSION", 46, UI.GOOD, UI.DARK, 0.07, 0.185, 0.93, 0.295, func(): start_mission(mission_index + 1))
 	result_menu_button = UI.button(card, "MenuButton", "MAIN MENU", 46, UI.PANEL_LIGHT, UI.TEXT, 0.07, 0.055, 0.93, 0.165, show_menu)
+
+
+func _build_pause_screen() -> void:
+	pause_screen = UI.rect(safe_root, "PauseScreen", Color(0.02, 0.03, 0.04, 0.90), 0, 0, 1, 1, true) # blocks touches
+	var card := UI.panel(pause_screen, "Card", UI.PANEL, 0.05, 0.20, 0.95, 0.80, 32, UI.AMBER_DIM, 3)
+	var card_style: StyleBoxFlat = card.get_meta("style")
+	card_style.shadow_color = Color(0, 0, 0, 0.5)
+	card_style.shadow_size = 24
+	pause_caption = UI.caps(card, "Caption", "", 26, UI.MUTED, HORIZONTAL_ALIGNMENT_CENTER, 0.04, 0.90, 0.96, 0.96, 4)
+	UI.text(card, "Title", "PAUSED", 100, UI.TEXT, HORIZONTAL_ALIGNMENT_CENTER, 0.03, 0.77, 0.97, 0.90, true)
+	pause_info = UI.caps(card, "Info", "", 30, UI.AMBER, HORIZONTAL_ALIGNMENT_CENTER, 0.04, 0.70, 0.96, 0.765, 3)
+	UI.text(card, "Note", "The timer is stopped and the vault is hidden.", 30, UI.MUTED, HORIZONTAL_ALIGNMENT_CENTER, 0.06, 0.62, 0.94, 0.69)
+	UI.button(card, "ResumeButton", "RESUME", 46, UI.GOOD, UI.DARK, 0.07, 0.465, 0.93, 0.575, resume_game)
+	UI.button(card, "RestartButton", "RESTART", 46, UI.AMBER, UI.DARK, 0.07, 0.335, 0.93, 0.445, func(): start_mission(mission_index))
+	UI.button(card, "SettingsButton", "SETTINGS", 40, UI.PANEL_LIGHT, UI.TEXT, 0.07, 0.205, 0.93, 0.315, open_settings)
+	UI.button(card, "MenuButton", "MAIN MENU", 40, UI.PANEL_LIGHT, UI.TEXT, 0.07, 0.075, 0.93, 0.185, show_menu)
+	pause_screen.visible = false
+
+
+func _build_settings_screen() -> void:
+	settings_screen = UI.rect(safe_root, "SettingsScreen", Color(0.02, 0.03, 0.04, 0.88), 0, 0, 1, 1, true)
+	var card := UI.panel(settings_screen, "Card", UI.PANEL, 0.05, 0.24, 0.95, 0.76, 32, UI.AMBER_DIM, 3)
+	UI.caps(card, "Caption", "VAULT PROTOCOL", 24, UI.MUTED, HORIZONTAL_ALIGNMENT_CENTER, 0.04, 0.90, 0.96, 0.95, 6)
+	UI.text(card, "Title", "SETTINGS", 80, UI.TEXT, HORIZONTAL_ALIGNMENT_CENTER, 0.04, 0.78, 0.96, 0.90, true)
+	sound_toggle = _settings_row(card, "SOUND", "Beeps, ticks and the alarm", 0.63, 0.75, _toggle_sound)
+	vibration_toggle = _settings_row(card, "VIBRATION", "The phone buzzes on a strike", 0.49, 0.61, _toggle_vibration)
+	UI.rect(card, "SpinLine", UI.LINE, 0.07, 0.468, 0.93, 0.471)
+	UI.caps(card, "SpinTitle", "SPIN SPEED", 32, UI.TEXT, HORIZONTAL_ALIGNMENT_LEFT, 0.07, 0.405, 0.65, 0.455, 4)
+	UI.text(card, "SpinNote", "How fast the vault turns under your finger", 26, UI.MUTED, HORIZONTAL_ALIGNMENT_LEFT, 0.07, 0.355, 0.95, 0.405)
+	spin_buttons.clear()
+	for i in GameSettings.SPIN_NAMES.size():
+		var x := 0.07 + i * 0.29
+		spin_buttons.append(UI.button(card, "Spin%d" % i, GameSettings.SPIN_NAMES[i], 30, UI.PANEL_LIGHT, UI.TEXT, x, 0.235, x + 0.27, 0.33, _set_spin_speed.bind(i), 18))
+	UI.button(card, "DoneButton", "DONE", 46, UI.AMBER, UI.DARK, 0.07, 0.06, 0.93, 0.17, close_settings)
+	settings_screen.visible = false
+
+
+func _settings_row(card: Control, title: String, note: String, y_min: float, y_max: float, on_pressed: Callable) -> Button:
+	UI.rect(card, title + "Line", UI.LINE, 0.07, y_max + 0.008, 0.93, y_max + 0.011)
+	var row := UI.area(card, title + "Row", 0.07, y_min, 0.93, y_max)
+	UI.caps(row, "Title", title, 32, UI.TEXT, HORIZONTAL_ALIGNMENT_LEFT, 0, 0.5, 0.65, 1, 4)
+	UI.text(row, "Note", note, 26, UI.MUTED, HORIZONTAL_ALIGNMENT_LEFT, 0, 0, 0.68, 0.5)
+	return UI.button(row, "Toggle", "ON", 34, UI.GOOD, UI.DARK, 0.70, 0.12, 1.0, 0.88, on_pressed, 18)
+
+
+func _build_howto_screen() -> void:
+	howto_screen = UI.rect(safe_root, "HowToScreen", UI.BACKGROUND, 0, 0, 1, 1, true)
+	var t := howto_screen
+	UI.caps(t, "Caption", "HOW TO PLAY", 28, UI.AMBER, HORIZONTAL_ALIGNMENT_LEFT, 0.06, 0.932, 0.6, 0.972, 6)
+	UI.button(t, "SkipButton", "SKIP", 28, UI.PANEL_LIGHT, UI.TEXT, 0.74, 0.928, 0.95, 0.976, close_howto, 16)
+	var area := UI.area(t, "Pages", 0.05, 0.165, 0.95, 0.915)
+	howto_pages = [_howto_roles(area), _howto_controls(area), _howto_rules(area)]
+	howto_dots.clear()
+	for i in howto_pages.size():
+		var x := 0.445 + i * 0.045
+		var dot := UI.circle(t, "Dot%d" % i, UI.SOCKET, x, 0.125, x + 0.025, 0.142)
+		dot.set_border_width_all(0)
+		howto_dots.append(dot)
+	howto_back = UI.button(t, "BackButton", "BACK", 40, UI.PANEL_LIGHT, UI.TEXT, 0.05, 0.03, 0.36, 0.105, func(): _show_howto_page(howto_page - 1), 20)
+	howto_next = UI.button(t, "NextButton", "NEXT", 40, UI.AMBER, UI.DARK, 0.40, 0.03, 0.95, 0.105, _howto_next_pressed, 20)
+	howto_screen.visible = false
+
+
+## Page 1: the two roles.
+func _howto_roles(area: Control) -> Control:
+	var p := UI.area(area, "Roles", 0, 0, 1, 1)
+	UI.text(p, "Title", "TWO PLAYERS,\nONE VAULT", 66, UI.TEXT, HORIZONTAL_ALIGNMENT_LEFT, 0.01, 0.84, 0.99, 1.0, true)
+	var op := _role_block(p, "1", "OPERATOR", "Holds this phone. Turns the vault, describes what is on every side and does what the Expert says.", 0.47, 0.81)
+	var phone := UI.panel(op, "Phone", UI.DARK, 0.775, 0.13, 0.935, 0.87, 22, UI.TEXT, 6)
+	var screen := UI.panel(phone, "Screen", UI.PANEL_LIGHT, 0.14, 0.12, 0.86, 0.88, 8)
+	UI.panel(screen, "Vault", UI.CLEAR, 0.22, 0.36, 0.78, 0.64, 6, UI.AMBER, 6)
+	var ex := _role_block(p, "2", "EXPERT", "Opens the PDF manual on another device, finds the right rule and tells the Operator what to do.", 0.12, 0.46)
+	var page := UI.panel(ex, "Manual", UI.KEY_FACE, 0.765, 0.13, 0.945, 0.87, 6)
+	for i in 6:
+		var y := 0.72 - i * 0.11
+		UI.rect(page, "Line%d" % i, Color(0.25, 0.24, 0.22), 0.14, y, 0.86 - (i % 3) * 0.12, y + 0.04)
+	UI.text(p, "Note", "No peeking at each other's screens — you can only talk!", 30, UI.AMBER, HORIZONTAL_ALIGNMENT_CENTER, 0.01, 0.0, 0.99, 0.10)
+	return p
+
+
+func _role_block(p: Control, number: String, title: String, body: String, y_min: float, y_max: float) -> Panel:
+	var card := UI.panel(p, title + "Card", UI.PANEL, 0, y_min, 1, y_max, 26, UI.LINE, 2)
+	var badge := UI.circle(card, "Badge", UI.AMBER, 0.05, 0.63, 0.16, 0.90)
+	badge.set_border_width_all(0)
+	UI.text(card, "Number", number, 44, UI.DARK, HORIZONTAL_ALIGNMENT_CENTER, 0.05, 0.63, 0.16, 0.90, true)
+	UI.caps(card, "Title", title, 40, UI.AMBER, HORIZONTAL_ALIGNMENT_LEFT, 0.20, 0.63, 0.72, 0.90, 5)
+	UI.text(card, "Body", body, 31, UI.TEXT, HORIZONTAL_ALIGNMENT_LEFT, 0.05, 0.06, 0.72, 0.60)
+	return card
+
+
+## Page 2: the touch controls.
+func _howto_controls(area: Control) -> Control:
+	var p := UI.area(area, "Controls", 0, 0, 1, 1)
+	UI.text(p, "Title", "TOUCH\nCONTROLS", 66, UI.TEXT, HORIZONTAL_ALIGNMENT_LEFT, 0.01, 0.84, 0.99, 1.0, true)
+	var rows := [
+		["DRAG", "Turn the vault. Let go and it turns to the nearest side."],
+		["TAP", "Cut a wire, press a key, press SET."],
+		["HOLD", "Keep pressing the big button. Let go on the right number."],
+		["TURN", "Circle a finger on the dial to turn it (Mission 3)."],
+		["PINCH", "Two fingers zoom in and out."],
+		["PAUSE", "The pause button is at the top left. The vault hides while paused."],
+	]
+	for i in rows.size():
+		var y_max := 0.81 - i * 0.135
+		var row := UI.panel(p, "Row%d" % i, UI.PANEL, 0, y_max - 0.12, 1, y_max, 20, UI.LINE, 2)
+		var chip := UI.panel(row, "Chip", UI.AMBER, 0.03, 0.22, 0.24, 0.78, 4096)
+		UI.caps(chip, "Text", rows[i][0], 28, UI.DARK, HORIZONTAL_ALIGNMENT_CENTER, 0, 0, 1, 1, 3)
+		UI.text(row, "Text", rows[i][1], 30, UI.TEXT, HORIZONTAL_ALIGNMENT_LEFT, 0.28, 0.05, 0.97, 0.95)
+	p.visible = false
+	return p
+
+
+## Page 3: the rules.
+func _howto_rules(area: Control) -> Control:
+	var p := UI.area(area, "Rules", 0, 0, 1, 1)
+	UI.text(p, "Title", "DISARM\nTHE VAULT", 66, UI.TEXT, HORIZONTAL_ALIGNMENT_LEFT, 0.01, 0.84, 0.99, 1.0, true)
+	var rules := [
+		[UI.AMBER, "Disarm every module before the timer runs out."],
+		[UI.BAD, "A wrong action is a STRIKE. Three strikes and the alarm goes off."],
+		[UI.GOOD, "Every side has a status light: red = armed, green = disarmed."],
+		[UI.TEXT, "The VAULT ID is on top of the vault. The Expert needs it for most rules."],
+		[UI.AMBER, "Three missions: Training Safe, Bank Vault and Central Reserve."],
+	]
+	for i in rules.size():
+		var y_max := 0.81 - i * 0.16
+		var row := UI.panel(p, "Rule%d" % i, UI.PANEL, 0, y_max - 0.145, 1, y_max, 20, UI.LINE, 2)
+		var light := UI.led(row, "Light", 0.03, 0.25, 0.12, 0.75, 5)
+		UI.set_light(light, rules[i][0])
+		UI.text(row, "Text", rules[i][1], 31, UI.TEXT, HORIZONTAL_ALIGNMENT_LEFT, 0.16, 0.05, 0.97, 0.95)
+	p.visible = false
+	return p
 
 
 ## Keeps the UI inside the phone's safe area (notch) and, on wide screens

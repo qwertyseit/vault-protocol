@@ -202,6 +202,18 @@ static func button(parent: Node, name: String, label: String, size: int, bg: Col
 	b.text = label
 	b.focus_mode = Control.FOCUS_NONE
 	b.clip_text = false
+	b.add_theme_stylebox_override("focus", StyleBoxEmpty.new())
+	b.add_theme_font_override("font", bold_font())
+	b.add_theme_font_size_override("font_size", size)
+	restyle_button(b, bg, fg, radius)
+	place(parent, b, x_min, y_min, x_max, y_max)
+	if on_pressed.is_valid():
+		b.pressed.connect(on_pressed)
+	return b
+
+
+## Gives a button new colors (used for ON/OFF switches and selected options).
+static func restyle_button(b: Button, bg: Color, fg: Color, radius := 22) -> void:
 	var normal := _key_style(bg, radius, false)
 	var pressed := _key_style(bg, radius, true)
 	b.add_theme_stylebox_override("normal", normal)
@@ -209,16 +221,9 @@ static func button(parent: Node, name: String, label: String, size: int, bg: Col
 	b.add_theme_stylebox_override("pressed", pressed)
 	b.add_theme_stylebox_override("hover_pressed", pressed)
 	b.add_theme_stylebox_override("disabled", _key_style(bg.darkened(0.45), radius, false))
-	b.add_theme_stylebox_override("focus", StyleBoxEmpty.new())
-	b.add_theme_font_override("font", bold_font())
-	b.add_theme_font_size_override("font_size", size)
 	for key in ["font_color", "font_hover_color", "font_pressed_color", "font_hover_pressed_color", "font_focus_color"]:
 		b.add_theme_color_override(key, fg)
 	b.set_meta("style", normal)
-	place(parent, b, x_min, y_min, x_max, y_max)
-	if on_pressed.is_valid():
-		b.pressed.connect(on_pressed)
-	return b
 
 
 ## An invisible button: a big touch area (used for the wires).

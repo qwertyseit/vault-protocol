@@ -149,3 +149,34 @@ static func keypad_order(key_symbols: Array, id: VaultId) -> Array:
 		return code_a > code_b if descending else code_a < code_b
 	)
 	return positions
+
+
+# =============================================================================
+# MODULE 4 - COMBINATION DIAL (Mission 3)
+# The module shows a CODE WORD. The manual table gives 3 numbers for it.
+# Vault ID has NO vowel -> dial the numbers in the order of the table.
+# Vault ID has a vowel  -> dial them in REVERSE order (last number first).
+# Turn the dial to a number, press SET, repeat for all 3 numbers.
+# =============================================================================
+const DIAL_WORDS := ["AMBER", "BISHOP", "COBALT", "DELTA", "ECHO", "FALCON", "GRANITE", "HARBOR", "IVORY", "JASPER"]
+
+const DIAL_CODES := [
+	[3, 7, 1], # AMBER
+	[8, 2, 6], # BISHOP
+	[5, 0, 9], # COBALT
+	[1, 4, 7], # DELTA
+	[6, 9, 2], # ECHO
+	[2, 5, 8], # FALCON
+	[9, 3, 0], # GRANITE
+	[4, 8, 3], # HARBOR
+	[7, 1, 5], # IVORY
+	[0, 6, 4], # JASPER
+]
+
+
+## The 3 numbers to dial, in the order they must be set.
+static func dial_sequence(word_index: int, id: VaultId) -> Array:
+	var numbers: Array = DIAL_CODES[word_index].duplicate()
+	if id.has_vowel():
+		numbers.reverse()
+	return numbers
