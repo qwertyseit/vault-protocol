@@ -9,7 +9,7 @@
 # Sides of the vault:  FRONT = timer display,  RIGHT = Wires,  BACK = Button,
 #                      LEFT = Keypad (Mission 2),  TOP = Vault ID plate.
 # In the menu the same vault slowly spins behind the title (showcase mode).
-# Mission 3 adds the Combination Dial on the BOTTOM side.
+# Mission 3 adds the Word Lock on the BOTTOM side.
 #
 # Also here: the pause menu (the game pauses by itself when the app goes to
 # the background; the Android back button pauses / goes back), the Settings
@@ -25,7 +25,7 @@ const Vault3D = preload("res://scripts/vault_3d.gd")
 const WiresModule = preload("res://scripts/wires_module.gd")
 const ButtonModule = preload("res://scripts/button_module.gd")
 const KeypadModule = preload("res://scripts/keypad_module.gd")
-const DialModule = preload("res://scripts/dial_module.gd")
+const WordLockModule = preload("res://scripts/word_lock_module.gd")
 const GameSettings = preload("res://scripts/game_settings.gd")
 
 enum State { MENU, PLAYING, PAUSED, RESULT }
@@ -191,8 +191,8 @@ func start_mission(index: int) -> void:
 		_create_module(KeypadModule, Vault3D.Face.LEFT)
 	else:
 		_build_empty_face(Vault3D.Face.LEFT)
-	if mission["has_dial"]:
-		_create_module(DialModule, Vault3D.Face.BOTTOM)
+	if mission["has_word_lock"]:
+		_create_module(WordLockModule, Vault3D.Face.BOTTOM)
 	else:
 		vault.show_sticker()
 	_update_disarmed_label()
@@ -675,8 +675,8 @@ func _mission_card(parent: Control, index: int, y_min: float, y_max: float) -> v
 	var names := ["WIRES", "BUTTON"]
 	if m["has_keypad"]:
 		names.append("KEYPAD")
-	if m["has_dial"]:
-		names.append("DIAL")
+	if m["has_word_lock"]:
+		names.append("WORDS")
 	var modules_text := "  •  ".join(PackedStringArray(names))
 	UI.caps(b, "Modules", modules_text, 24, UI.MUTED, HORIZONTAL_ALIGNMENT_LEFT, 0.25, 0.12, 0.80, 0.46, 3)
 	UI.text(b, "Time", UI.format_time(m["time_limit"]), 50, UI.AMBER, HORIZONTAL_ALIGNMENT_RIGHT, 0.72, 0.46, 0.95, 0.92, true)
@@ -844,15 +844,14 @@ func _howto_controls(area: Control) -> Control:
 	UI.text(p, "Title", "TOUCH\nCONTROLS", 66, UI.TEXT, HORIZONTAL_ALIGNMENT_LEFT, 0.01, 0.84, 0.99, 1.0, true)
 	var rows := [
 		["DRAG", "Turn the vault. Let go and it turns to the nearest side."],
-		["TAP", "Cut a wire, press a key, press SET."],
+		["TAP", "Cut a wire, press a key or a word button."],
 		["HOLD", "Keep pressing the big button. Let go on the right number."],
-		["TURN", "Circle a finger on the dial to turn it (Mission 3)."],
 		["PINCH", "Two fingers zoom in and out."],
 		["PAUSE", "The pause button is at the top left. The vault hides while paused."],
 	]
 	for i in rows.size():
-		var y_max := 0.81 - i * 0.135
-		var row := UI.panel(p, "Row%d" % i, UI.PANEL, 0, y_max - 0.12, 1, y_max, 20, UI.LINE, 2)
+		var y_max := 0.81 - i * 0.16
+		var row := UI.panel(p, "Row%d" % i, UI.PANEL, 0, y_max - 0.14, 1, y_max, 20, UI.LINE, 2)
 		var chip := UI.panel(row, "Chip", UI.AMBER, 0.03, 0.22, 0.24, 0.78, 4096)
 		UI.caps(chip, "Text", rows[i][0], 28, UI.DARK, HORIZONTAL_ALIGNMENT_CENTER, 0, 0, 1, 1, 3)
 		UI.text(row, "Text", rows[i][1], 30, UI.TEXT, HORIZONTAL_ALIGNMENT_LEFT, 0.28, 0.05, 0.97, 0.95)
@@ -868,7 +867,7 @@ func _howto_rules(area: Control) -> Control:
 		[UI.AMBER, "Disarm every module before the timer runs out."],
 		[UI.BAD, "A wrong action is a STRIKE. Three strikes and the alarm goes off."],
 		[UI.GOOD, "Every side has a status light: red = armed, green = disarmed."],
-		[UI.TEXT, "The VAULT ID is on top of the vault. The Expert needs it for most rules."],
+		[UI.TEXT, "The VAULT ID is on top of the vault. Spell words letter by letter: STEEL is not STEAL!"],
 		[UI.AMBER, "Three missions: Training Safe, Bank Vault and Central Reserve."],
 	]
 	for i in rules.size():

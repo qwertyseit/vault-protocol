@@ -152,31 +152,45 @@ static func keypad_order(key_symbols: Array, id: VaultId) -> Array:
 
 
 # =============================================================================
-# MODULE 4 - COMBINATION DIAL (Mission 3)
-# The module shows a CODE WORD. The manual table gives 3 numbers for it.
-# Vault ID has NO vowel -> dial the numbers in the order of the table.
-# Vault ID has a vowel  -> dial them in REVERSE order (last number first).
-# Turn the dial to a number, press SET, repeat for all 3 numbers.
+# MODULE 4 - WORD LOCK (Mission 3, bottom side of the vault)
+# A screen shows a word (or nothing). Six buttons below show six words.
+# Step 1: the SCREEN word tells which button to READ (table 1).
+# Step 2: the word on that button gives a list (table 2). Press the button
+#         with the FIRST word of that list that is on the panel.
+# Three stages; every stage shows new words.
 # =============================================================================
-const DIAL_WORDS := ["AMBER", "BISHOP", "COBALT", "DELTA", "ECHO", "FALCON", "GRANITE", "HARBOR", "IVORY", "JASPER"]
+const WORD_LOCK_SCREEN := ["KEY", "KEYS", "QUAY", "SAFE", "SAVE", "CODE", "COLD", "LOCKED", "LOCK IT", "ZERO", "OH", ""]
 
-const DIAL_CODES := [
-	[3, 7, 1], # AMBER
-	[8, 2, 6], # BISHOP
-	[5, 0, 9], # COBALT
-	[1, 4, 7], # DELTA
-	[6, 9, 2], # ECHO
-	[2, 5, 8], # FALCON
-	[9, 3, 0], # GRANITE
-	[4, 8, 3], # HARBOR
-	[7, 1, 5], # IVORY
-	[0, 6, 4], # JASPER
-]
+## Button to read for each screen word.
+# 0 = top left, 1 = top right, 2 = middle left, 3 = middle right, 4 = bottom left, 5 = bottom right
+const WORD_LOCK_READ := [3, 4, 1, 5, 0, 2, 5, 1, 2, 4, 3, 0]
+const WORD_LOCK_POSITIONS := ["TOP LEFT", "TOP RIGHT", "MIDDLE LEFT", "MIDDLE RIGHT", "BOTTOM LEFT", "BOTTOM RIGHT"]
+
+const WORD_LOCK_WORDS := ["STEEL", "STEAL", "CASH", "CACHE", "BREAK", "BRAKE", "HOLE", "WHOLE", "TWO", "TOO", "KNOW", "NOW"]
+
+## Step 2 lists: button word -> words in the order to look for them.
+const WORD_LOCK_LISTS := {
+	"STEEL": ["BREAK", "NOW", "WHOLE", "STEAL", "BRAKE", "CASH", "TOO", "TWO", "HOLE", "KNOW", "CACHE", "STEEL"],
+	"STEAL": ["NOW", "STEAL", "TWO", "STEEL", "BRAKE", "HOLE", "KNOW", "WHOLE", "TOO", "BREAK", "CACHE", "CASH"],
+	"CASH": ["STEAL", "BREAK", "BRAKE", "STEEL", "KNOW", "CASH", "CACHE", "TOO", "WHOLE", "TWO", "HOLE", "NOW"],
+	"CACHE": ["STEEL", "KNOW", "STEAL", "WHOLE", "NOW", "TOO", "TWO", "CACHE", "HOLE", "BRAKE", "CASH", "BREAK"],
+	"BREAK": ["BREAK", "CASH", "WHOLE", "TOO", "NOW", "STEEL", "STEAL", "BRAKE", "TWO", "HOLE", "KNOW", "CACHE"],
+	"BRAKE": ["KNOW", "TWO", "NOW", "CACHE", "HOLE", "BRAKE", "BREAK", "CASH", "TOO", "WHOLE", "STEAL", "STEEL"],
+	"HOLE": ["BREAK", "NOW", "STEAL", "KNOW", "STEEL", "CASH", "HOLE", "TOO", "WHOLE", "TWO", "BRAKE", "CACHE"],
+	"WHOLE": ["HOLE", "BREAK", "STEAL", "CACHE", "WHOLE", "STEEL", "BRAKE", "KNOW", "TOO", "TWO", "CASH", "NOW"],
+	"TWO": ["STEEL", "TOO", "HOLE", "TWO", "NOW", "KNOW", "CACHE", "WHOLE", "STEAL", "BREAK", "CASH", "BRAKE"],
+	"TOO": ["HOLE", "STEAL", "KNOW", "STEEL", "NOW", "BRAKE", "CASH", "TWO", "WHOLE", "BREAK", "TOO", "CACHE"],
+	"KNOW": ["CACHE", "TWO", "BRAKE", "CASH", "TOO", "WHOLE", "STEEL", "NOW", "KNOW", "HOLE", "BREAK", "STEAL"],
+	"NOW": ["TOO", "BREAK", "KNOW", "CACHE", "STEAL", "STEEL", "CASH", "NOW", "WHOLE", "TWO", "BRAKE", "HOLE"],
+}
 
 
-## The 3 numbers to dial, in the order they must be set.
-static func dial_sequence(word_index: int, id: VaultId) -> Array:
-	var numbers: Array = DIAL_CODES[word_index].duplicate()
-	if id.has_vowel():
-		numbers.reverse()
-	return numbers
+## screen: index in WORD_LOCK_SCREEN. buttons: the 6 words on the panel
+## (index 0 = top left ... 5 = bottom right). Returns the button to press.
+static func word_lock_answer(screen: int, buttons: Array) -> int:
+	var read_word: String = buttons[WORD_LOCK_READ[screen]]
+	for word in WORD_LOCK_LISTS[read_word]:
+		var position := buttons.find(word)
+		if position >= 0:
+			return position
+	return WORD_LOCK_READ[screen] # never reached: the read word is always on the panel

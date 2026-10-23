@@ -70,7 +70,6 @@ var _press_time := 0.0
 var _panel_face := -1
 var _panel_pixel := Vector2.ZERO
 var _panel_time := 0.0
-var _panel_drag := false # the finger turns a part of a module (the dial), not the vault
 var _last_move_time := 0.0
 var _velocity := Vector2.ZERO
 var _snapping := false
@@ -143,7 +142,6 @@ func cancel_touch() -> void:
 	if _touch == Touch.PANEL:
 		_cancel_panel_press()
 	_touch = Touch.NONE
-	_panel_drag = false
 	_velocity = Vector2.ZERO
 	_fingers.clear()
 	_pinching = false
@@ -238,7 +236,6 @@ func _start_pinch() -> void:
 	if _touch == Touch.PANEL:
 		_cancel_panel_press()
 	_touch = Touch.NONE
-	_panel_drag = false
 	_velocity = Vector2.ZERO
 	_snapping = false
 	_pinching = true
@@ -266,25 +263,9 @@ func _on_press(pos: Vector2) -> void:
 	_last_move_time = _press_time
 	_velocity = Vector2.ZERO
 	_snapping = false
-	_panel_drag = false
-
-	# A part that is turned with the finger (the Combination Dial): the press
-	# goes to the module at once, and moving the finger turns that part.
-	var hit := _pick(pos)
-	if not hit.is_empty() and interactive and _wants_drag(hit["face"], hit["pixel"]):
-		_touch = Touch.PANEL
-		_panel_drag = true
-		_panel_face = hit["face"]
-		_panel_pixel = hit["pixel"]
-		_panel_time = _now()
-		_send_click(_panel_face, _panel_pixel, true)
 
 
 func _on_move(pos: Vector2) -> void:
-	if _touch == Touch.PANEL and _panel_drag:
-		_send_motion(_panel_face, _face_pixel(_panel_face, pos))
-		_last_pos = pos
-		return
 	if _touch == Touch.PENDING and pos.distance_to(_press_pos) > DRAG_THRESHOLD:
 		_touch = Touch.ROTATE
 	elif _touch == Touch.PANEL and pos.distance_to(_press_pos) > DRAG_THRESHOLD \
@@ -311,13 +292,10 @@ func _on_release(pos: Vector2) -> void:
 				_send_click(hit["face"], hit["pixel"], true)
 				_send_click(hit["face"], hit["pixel"], false)
 		Touch.PANEL:
+			var hit := _pick(pos)
 			var pixel: Vector2 = _panel_pixel
-			if _panel_drag:
-				pixel = _face_pixel(_panel_face, pos)
-			else:
-				var hit := _pick(pos)
-				if not hit.is_empty() and hit["face"] == _panel_face:
-					pixel = hit["pixel"]
+			if not hit.is_empty() and hit["face"] == _panel_face:
+				pixel = hit["pixel"]
 			_send_click(_panel_face, pixel, false)
 		Touch.ROTATE:
 			if _now() - _last_move_time > 0.1:
@@ -325,7 +303,6 @@ func _on_release(pos: Vector2) -> void:
 			if _velocity.length() < 120.0:
 				_start_snap()
 	_touch = Touch.NONE
-	_panel_drag = false
 
 
 func _process(delta: float) -> void:
@@ -430,46 +407,6 @@ func _pick(screen_pos: Vector2) -> Dictionary:
 		best_t = t
 		result = {"face": f["index"], "pixel": uv * FACE_PX}
 	return result
-
-
-## Does a module want this touch for a part that is turned by the finger?
-func _wants_drag(face: int, pixel: Vector2) -> bool:
-	var holder: Control = faces[face]["holder"]
-	if holder == null:
-		return false
-	for child in holder.get_children():
-		if child.has_method("wants_drag_at") and child.wants_drag_at(pixel):
-			return true
-	return false
-
-
-## Pixel of a face screen under a screen position, even outside the screen
-## (so turning the dial keeps working when the finger slides off it).
-func _face_pixel(face: int, screen_pos: Vector2) -> Vector2:
-	var origin := camera.project_ray_origin(screen_pos)
-	var dir := camera.project_ray_normal(screen_pos)
-	var xf: Transform3D = (faces[face]["node"] as Node3D).global_transform
-	var normal := xf.basis.z.normalized()
-	var denom := dir.dot(normal)
-	if absf(denom) < 0.0001:
-		return _panel_pixel
-	var t := (xf.origin - origin).dot(normal) / denom
-	var local := xf.affine_inverse() * (origin + dir * t)
-	return Vector2(local.x / PANEL + 0.5, 0.5 - local.y / PANEL) * FACE_PX
-
-
-## Sends a finger move (left button held) to the face's 2D screen.
-func _send_motion(face: int, pixel: Vector2) -> void:
-	var vp: SubViewport = faces[face]["viewport"]
-	if vp == null:
-		return
-	var ev := InputEventMouseMotion.new()
-	ev.button_mask = MOUSE_BUTTON_MASK_LEFT
-	ev.position = pixel
-	ev.global_position = pixel
-	ev.relative = pixel - _panel_pixel
-	_panel_pixel = pixel
-	vp.push_input(ev, true)
 
 
 func _now() -> float:

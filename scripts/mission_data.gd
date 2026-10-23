@@ -12,7 +12,7 @@ const MISSIONS := [
 		"min_wires": 3,
 		"max_wires": 4,
 		"has_keypad": false, # Wires + Button
-		"has_dial": false,
+		"has_word_lock": false,
 	},
 	{
 		"title": "MISSION 2",
@@ -21,7 +21,7 @@ const MISSIONS := [
 		"min_wires": 4,
 		"max_wires": 5,
 		"has_keypad": true, # Wires + Button + Keypad
-		"has_dial": false,
+		"has_word_lock": false,
 	},
 	{
 		"title": "MISSION 3",
@@ -30,7 +30,7 @@ const MISSIONS := [
 		"min_wires": 4,
 		"max_wires": 5,
 		"has_keypad": true,
-		"has_dial": true, # Wires + Button + Keypad + Combination Dial (bottom side)
+		"has_word_lock": true, # Wires + Button + Keypad + Word Lock (bottom side)
 	},
 ]
 

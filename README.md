@@ -14,18 +14,17 @@ A bank-vault heist for two: the **Operator** holds the phone with a 3D vault, th
 |---|---|---|
 | 01 · Training Safe | Wires (3–4) + Override Button | 5:00 |
 | 02 · Bank Vault | Wires (4–5) + Override Button + Symbol Keypad | 4:00 |
-| 03 · Central Reserve | Wires (4–5) + Override Button + Symbol Keypad + Combination Dial | 5:00 |
+| 03 · Central Reserve | Wires (4–5) + Override Button + Symbol Keypad + Word Lock | 5:00 |
 
-The modules sit on the sides of the vault: front = timer and strike lights, right = Wires, back = Override Button, left = Symbol Keypad, top = Vault ID plate (the Expert needs it for most rules), bottom = Combination Dial (Mission 3).
+The modules sit on the sides of the vault: front = timer and strike lights, right = Wires, back = Override Button, left = Symbol Keypad, top = Vault ID plate (the Expert needs it for most rules), bottom = Word Lock (Mission 3: a screen word and six word buttons that sound alike — STEEL / STEAL, CASH / CACHE — so everything has to be spelled).
 
 ## Controls
 
 | Gesture | Action |
 |---|---|
 | Drag with one finger | Turn the vault in any direction; it settles on the nearest side, upright |
-| Tap | Cut a wire, press a keypad key, tap the button |
+| Tap | Cut a wire, press a keypad key or a word button, tap the button |
 | Press and hold | Hold the Override Button, let go on the right number of the PIN counter |
-| Circle a finger on the dial | Turn the Combination Dial; the − / + buttons move it one number |
 | Pinch with two fingers | Zoom (mouse wheel on a PC) |
 | Pause button / Android back button | Pause: resume, restart, settings, main menu. The game also pauses by itself when the app goes to the background |
 
@@ -55,7 +54,7 @@ scripts/
   wires_module.gd      module: wires
   button_module.gd     module: override button (tap / hold + PIN counter)
   keypad_module.gd     module: symbol keypad
-  dial_module.gd       module: combination dial (turned by a circular finger drag)
+  word_lock_module.gd  module: word lock (screen word + 6 word buttons, 3 stages)
   game_settings.gd     player settings saved in user://settings.cfg
   vault_module.gd      base script for the modules
   mission_data.gd      settings of the three missions
@@ -71,4 +70,4 @@ Manual/                the Expert's technical manual (PDF)
 | **Adilseit Tuiyebay** | Game development | Godot project, gameplay code, 3D vault and touch input, UI and feedback, Android build |
 | **Artemiy Kim** | Game design and documentation | Puzzle rules and mission balance, the Expert's technical manual (PDF), README and other documents, demo video, playtesting |
 
-Versions: Assignment 2 — tag [`v0.2-a2`](https://github.com/qwertyseit/vault-protocol/tree/v0.2-a2). Assignment 3 — Android build 0.3 (pause, settings, How to play, Mission 3 with the Combination Dial).
+Versions: Assignment 2 — tag [`v0.2-a2`](https://github.com/qwertyseit/vault-protocol/tree/v0.2-a2). Assignment 3 — Android build 0.3 (pause, settings, How to play, Mission 3 with the Word Lock).
