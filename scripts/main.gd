@@ -3,8 +3,13 @@
 # The "brain" of Vault Protocol. Attached to the root node of main.tscn.
 #   * builds the UI (menu, HUD, result screen) and the 3D vault from code,
 #   * runs the game states: MENU -> PLAYING -> RESULT -> (Retry / Next / Menu),
-#   * counts down the timer and counts strikes (3 strikes = alarm = lose),
+#   * runs the SIDE TIMERS and counts strikes (3 strikes = alarm = lose),
 #   * puts the modules of the selected mission on the sides of the vault.
+#
+# Side timers (v0.4, from the Assignment 3 feedback): every module starts
+# sealed. The Operator taps a side to open it -> that side's timer starts and
+# the vault locks on it until it is disarmed. Side timer at 00:00 = alarm.
+# Best clear times are saved per mission (game_progress.gd).
 #
 # Sides of the vault:  FRONT = timer display,  RIGHT = Wires,  BACK = Button,
 #                      LEFT = Keypad (Mission 2),  TOP = Vault ID plate.
@@ -13,7 +18,8 @@
 #
 # Also here: the pause menu (the game pauses by itself when the app goes to
 # the background; the Android back button pauses / goes back), the Settings
-# screen (saved on the phone) and the 3-page How to play screen.
+# screen (saved on the phone), the 3-page How to play screen and the
+# performance overlay (perf_monitor.gd).
 # -----------------------------------------------------------------------------
 extends Control
 
@@ -27,11 +33,14 @@ const ButtonModule = preload("res://scripts/button_module.gd")
 const KeypadModule = preload("res://scripts/keypad_module.gd")
 const WordLockModule = preload("res://scripts/word_lock_module.gd")
 const GameSettings = preload("res://scripts/game_settings.gd")
+const GameProgress = preload("res://scripts/game_progress.gd")
+const PerfMonitor = preload("res://scripts/perf_monitor.gd")
 
 enum State { MENU, PLAYING, PAUSED, RESULT }
 
 const MAX_STRIKES := 3
 const RESULT_DELAY := 0.9 # pause so players see their last action
+const STATUS_TIME := 5.0 # seconds a message stays on screen before it fades
 
 var state: State = State.MENU
 var sfx: Node
@@ -41,9 +50,13 @@ var rng := RandomNumberGenerator.new()
 var mission_index := 0
 var mission: Dictionary
 var vault_id: VaultId
-var time_left := 0.0
+var active_module: Control = null # the side that is open right now (or null)
+var side_time_left := 0.0 # timer of the open side
+var mission_time := 0.0 # time played in this mission (for the records)
 var strikes := 0
 var last_whole_second := -1
+var progress: GameProgress
+var new_record := false
 var modules: Array = []
 var module_faces: Array = [] # which vault side each module is on
 var flow_token := 0 # changes on every restart/menu, cancels pending result screens
@@ -54,12 +67,16 @@ var menu_screen: Control
 var game_screen: Control
 var result_screen: Control
 var vault: Vault3D # the 3D vault (vault_3d.gd)
-var mission_label: Label
-var disarmed_label: Label
 var timer_label: Label # small timer in the HUD
 var display_timer_label: Label # big timer on the front of the vault
+var hud_ghost: Label # dim "88:88" behind the HUD timer (hidden while no side is open)
+var display_ghost: Label # the same on the front of the vault
 var status_label: Label
 var status_style: StyleBoxFlat
+var status_box: Control
+var status_time := 0.0 # seconds left before the message fades
+var mission_records: Array = [] # [time Label, caption Label] on every menu card
+var perf: Control # perf_monitor.gd overlay
 var strike_lights: Array = [] # HUD
 var display_strike_lights: Array = [] # front of the vault
 var result_card_style: StyleBoxFlat
@@ -69,6 +86,7 @@ var result_flavor: Label
 var result_time: Label
 var result_strikes: Label
 var result_modules: Label
+var result_record: Label
 var retry_button: Button
 var next_mission_button: Button
 var result_menu_button: Button
@@ -84,6 +102,9 @@ var pause_info: Label
 var settings_screen: Control
 var sound_toggle: Button
 var vibration_toggle: Button
+var perf_toggle: Button
+var reset_records_button: Button
+var reset_armed := false
 var spin_buttons: Array = []
 var howto_screen: Control
 var howto_pages: Array = []
@@ -106,11 +127,14 @@ func _ready() -> void:
 	get_tree().quit_on_go_back = false # the Android back button pauses / goes back instead
 	settings = GameSettings.new()
 	settings.load_settings()
+	progress = GameProgress.new()
+	progress.load_progress()
 	sfx = SoundFx.new()
 	sfx.name = "SoundFx"
 	add_child(sfx)
 
 	_build_ui()
+	vault.rotation_blocked.connect(_on_rotation_blocked)
 	_apply_settings()
 	get_viewport().size_changed.connect(_apply_layout)
 	_apply_layout()
@@ -131,16 +155,19 @@ func _notification(what: int) -> void:
 
 func _process(delta: float) -> void:
 	_update_flash(delta)
+	_update_status_fade(delta)
 
 	if state != State.PLAYING:
 		return
 
-	time_left -= delta
-	if time_left <= 0.0:
-		time_left = 0.0
-		_update_timer_labels()
-		_end_mission(false, "Time is up!")
-		return
+	mission_time += delta
+	if active_module != null:
+		side_time_left -= delta
+		if side_time_left <= 0.0:
+			side_time_left = 0.0
+			_update_timer_labels()
+			_end_mission(false, "The %s side ran out of time!" % active_module.display_name())
+			return
 	_update_timer_labels()
 
 
@@ -155,10 +182,14 @@ func show_menu() -> void:
 	flow_token += 1
 	state = State.MENU
 	vault.interactive = false
+	vault.locked = false
+	active_module = null
 	pause_screen.visible = false
 	settings_screen.visible = false
+	perf.visible = false
 	vault.set_vault_hidden(false)
 	_clear_mission()
+	_refresh_mission_records()
 	_build_showcase()
 	vault.set_showcase(true)
 	vault.set_active(false) # the menu panels never change: draw them once
@@ -175,11 +206,14 @@ func start_mission(index: int) -> void:
 	mission_index = index
 	mission = MissionData.get_mission(index)
 	vault_id = VaultId.new(VaultId.random_code(rng))
-	time_left = mission["time_limit"]
+	active_module = null
+	side_time_left = 0.0
+	mission_time = 0.0
 	strikes = 0
 	last_whole_second = -1
+	new_record = false
+	vault.locked = false
 
-	mission_label.text = "MISSION %d  •  %s" % [index + 1, mission["subtitle"]]
 	for light in strike_lights:
 		UI.set_light(light, UI.LED_OFF, false)
 
@@ -195,9 +229,8 @@ func start_mission(index: int) -> void:
 		_create_module(WordLockModule, Vault3D.Face.BOTTOM)
 	else:
 		vault.show_sticker()
-	_update_disarmed_label()
 
-	show_status("Find the VAULT ID on top of the vault and read it to your Expert.", UI.MUTED)
+	show_status("Read the VAULT ID on top to your Expert first. Then tap a side to open it.", UI.MUTED, 12.0)
 
 	menu_screen.visible = false
 	result_screen.visible = false
@@ -211,6 +244,8 @@ func start_mission(index: int) -> void:
 	vault.set_active(true)
 	vault.interactive = true
 	state = State.PLAYING
+	perf.visible = settings.perf_monitor
+	perf.reset_test()
 	_update_timer_labels()
 	sfx.play("start")
 
@@ -226,6 +261,7 @@ func _create_module(script: GDScript, face: int) -> void:
 	module.name = module.display_name()
 	UI.place(vault.face_holder(face), module, 0, 0, 1, 1)
 	module.init_module(self, mission, vault_id, rng)
+	module.add_shutter(MissionData.side_time(mission, module.display_name()))
 	modules.append(module)
 	module_faces.append(face)
 	vault.set_led(face, true, UI.BAD)
@@ -235,6 +271,7 @@ func _clear_mission() -> void:
 	modules.clear()
 	module_faces.clear()
 	display_timer_label = null
+	display_ghost = null
 	display_strike_lights.clear()
 	if vault != null:
 		vault.clear_faces()
@@ -248,6 +285,8 @@ func _build_showcase() -> void:
 	vault_id = VaultId.new("VPX-024")
 	_build_display_face()
 	display_timer_label.text = "--:--"
+	display_timer_label.add_theme_color_override("font_color", UI.MUTED)
+	display_ghost.visible = false
 	_build_plate_face()
 	vault.show_sticker()
 	var demo := [[WiresModule, Vault3D.Face.RIGHT], [ButtonModule, Vault3D.Face.BACK], [KeypadModule, Vault3D.Face.LEFT]]
@@ -256,6 +295,37 @@ func _build_showcase() -> void:
 		UI.place(vault.face_holder(d[1]), module, 0, 0, 1, 1)
 		module.init_module(self, mission, vault_id, demo_rng)
 		vault.set_led(d[1], true, UI.BAD)
+
+
+## Called by a module when the Operator taps its shutter.
+func request_open_side(module: Control) -> void:
+	if not is_playing() or module.is_open:
+		return
+	if active_module != null:
+		show_status("Finish the %s side first." % active_module.display_name(), UI.AMBER)
+		vault.shake(0.3)
+		sfx.play("click")
+		return
+
+	active_module = module
+	side_time_left = module.side_time
+	last_whole_second = -1
+	module.open_side()
+	vault.snap_to_face(module_faces[modules.find(module)])
+	vault.locked = true
+	vault.set_led(module_faces[modules.find(module)], true, UI.AMBER)
+	show_status("%s is open. The vault is locked until you disarm it." % module.display_name(), UI.TEXT)
+	sfx.play("start")
+	_update_timer_labels()
+
+
+## The player tried to turn the vault while a side is open.
+func _on_rotation_blocked() -> void:
+	if active_module == null or not is_playing():
+		return
+	show_status("Locked: finish the %s side first." % active_module.display_name(), UI.AMBER)
+	vault.shake(0.25)
+	sfx.play("click")
 
 
 ## Called by a module when the player made a wrong action.
@@ -285,11 +355,18 @@ func on_module_solved(module: Control, message: String) -> void:
 	var index := modules.find(module)
 	if index >= 0:
 		vault.set_led(module_faces[index], true, UI.GOOD)
+	if module == active_module:
+		active_module = null # the side is done: the vault can turn again
+		vault.locked = false
 	sfx.play("solved")
 	_flash(UI.GOOD, 0.25)
 	vault.pop()
-	show_status(message, UI.GOOD)
-	_update_disarmed_label()
+	var left := modules.size() - _count_solved()
+	if left > 0:
+		show_status("%s\nTurn the vault: %d %s left." % [message, left, "side" if left == 1 else "sides"], UI.GOOD)
+	else:
+		show_status(message, UI.GOOD)
+	_update_timer_labels()
 
 	if _count_solved() == modules.size():
 		_end_mission(true, "")
@@ -298,9 +375,12 @@ func on_module_solved(module: Control, message: String) -> void:
 func _end_mission(won: bool, reason: String) -> void:
 	state = State.RESULT # stops the timer and blocks all modules
 	vault.interactive = false
+	vault.locked = false
 	timer_label.visible = true # never end on a "blink off" frame
 	if display_timer_label != null:
 		display_timer_label.visible = true
+	if won:
+		new_record = progress.submit_clear(mission_index, mission_time, strikes)
 	sfx.play("win" if won else "alarm")
 	_show_result_after_delay(won, reason)
 
@@ -320,11 +400,20 @@ func _show_result_after_delay(won: bool, reason: String) -> void:
 		result_flavor.text = ["Clean job — not a single strike.", "Smooth work. Only one slip.", "Phew… that was way too close!"][mini(strikes, 2)]
 	else:
 		result_flavor.text = reason
-	result_time.text = UI.format_time(time_left)
+	result_time.text = UI.format_time(mission_time)
 	result_strikes.text = "%d / %d" % [strikes, MAX_STRIKES]
 	result_strikes.add_theme_color_override("font_color", UI.TEXT if strikes == 0 else UI.BAD)
 	result_modules.text = "%d / %d" % [_count_solved(), modules.size()]
 	result_modules.add_theme_color_override("font_color", UI.GOOD if won else UI.TEXT)
+	if won and new_record:
+		result_record.text = "NEW BEST TIME!"
+		result_record.add_theme_color_override("font_color", UI.AMBER)
+	elif progress.has_record(mission_index):
+		result_record.text = "BEST TIME  %s" % UI.format_time(progress.get_record(mission_index)["time"])
+		result_record.add_theme_color_override("font_color", UI.MUTED)
+	else:
+		result_record.text = "NOT CLEARED YET"
+		result_record.add_theme_color_override("font_color", UI.MUTED)
 
 	# Buttons: the most useful one goes on top.
 	var has_next := won and mission_index + 1 < MissionData.count()
@@ -351,7 +440,10 @@ func pause_game() -> void:
 	vault.set_vault_hidden(true) # no studying the modules while the clock is stopped
 	vault.set_active(false)
 	pause_caption.text = "MISSION %d  •  %s" % [mission_index + 1, mission["subtitle"]]
-	pause_info.text = "TIME LEFT %s   •   STRIKES %d / %d" % [UI.format_time(time_left), strikes, MAX_STRIKES]
+	if active_module != null:
+		pause_info.text = "%s  %s LEFT   •   STRIKES %d / %d" % [active_module.display_name(), UI.format_time(side_time_left), strikes, MAX_STRIKES]
+	else:
+		pause_info.text = "NO SIDE OPEN   •   STRIKES %d / %d" % [strikes, MAX_STRIKES]
 	pause_screen.visible = true
 	_fade_in(pause_screen)
 	sfx.play("click")
@@ -396,6 +488,10 @@ func _apply_settings() -> void:
 
 
 func open_settings() -> void:
+	reset_armed = false
+	if reset_records_button != null:
+		reset_records_button.text = "RESET"
+		UI.restyle_button(reset_records_button, UI.PANEL_LIGHT, UI.TEXT, 18)
 	_refresh_settings_ui()
 	settings_screen.visible = true
 	_fade_in(settings_screen)
@@ -428,11 +524,34 @@ func _set_spin_speed(index: int) -> void:
 	sfx.play("click")
 
 
+func _toggle_perf_monitor() -> void:
+	settings.perf_monitor = not settings.perf_monitor
+	perf.visible = settings.perf_monitor and state != State.MENU
+	_apply_settings()
+	sfx.play("click")
+
+
+## Two taps: RESET -> SURE? -> records deleted.
+func _reset_records_pressed() -> void:
+	sfx.play("click")
+	if not reset_armed:
+		reset_armed = true
+		reset_records_button.text = "SURE?"
+		UI.restyle_button(reset_records_button, UI.BAD, UI.DARK, 18)
+		return
+	progress.reset()
+	_refresh_mission_records()
+	reset_armed = false
+	reset_records_button.text = "CLEARED"
+	UI.restyle_button(reset_records_button, UI.SOCKET, UI.TEXT, 18)
+
+
 func _refresh_settings_ui() -> void:
 	if sound_toggle == null:
 		return
 	_style_toggle(sound_toggle, settings.sound)
 	_style_toggle(vibration_toggle, settings.vibration)
+	_style_toggle(perf_toggle, settings.perf_monitor)
 	for i in spin_buttons.size():
 		var selected: bool = i == settings.spin_speed
 		UI.restyle_button(spin_buttons[i], UI.AMBER if selected else UI.PANEL_LIGHT, UI.DARK if selected else UI.TEXT, 18)
@@ -484,32 +603,59 @@ func _count_solved() -> int:
 	return n
 
 
-func _update_disarmed_label() -> void:
-	var solved := _count_solved()
-	disarmed_label.text = "DISARMED %d / %d" % [solved, modules.size()]
-	disarmed_label.add_theme_color_override("font_color", UI.GOOD if solved > 0 else UI.MUTED)
-
-
-func show_status(message: String, color: Color) -> void:
+## Short message at the bottom of the game screen. It fades after a few seconds.
+func show_status(message: String, color: Color, seconds := STATUS_TIME) -> void:
 	status_label.text = message
 	status_label.add_theme_color_override("font_color", color if color != UI.MUTED else UI.TEXT)
 	status_style.border_color = color if color != UI.MUTED else UI.AMBER
+	status_time = seconds
+	status_box.modulate.a = 1.0
 
 
+func _update_status_fade(delta: float) -> void:
+	if status_box == null or status_time <= 0.0:
+		return
+	if state == State.PLAYING:
+		status_time -= delta
+	status_box.modulate.a = clampf(status_time / 0.6, 0.0, 1.0)
+
+
+## Menu cards: best time of every mission.
+func _refresh_mission_records() -> void:
+	for i in mission_records.size():
+		var time_label: Label = mission_records[i][0]
+		var caption: Label = mission_records[i][1]
+		if progress.has_record(i):
+			var r := progress.get_record(i)
+			time_label.text = UI.format_time(r["time"])
+			time_label.add_theme_color_override("font_color", UI.AMBER)
+			caption.text = "BEST TIME"
+		else:
+			time_label.text = ""
+			caption.text = "NOT CLEARED"
+
+
+## HUD + front display: the timer of the open side, or --:-- when no side is open.
 func _update_timer_labels() -> void:
-	var text := UI.format_time(time_left)
-	var color := UI.AMBER
+	var text := "--:--"
+	var color := UI.MUTED
 	var shown := true
-	if time_left <= 30.0:
-		color = UI.BAD
-		if time_left <= 10.0:
-			# blink + tick every second in the last 10 seconds
-			shown = fmod(time_left, 1.0) > 0.3 or not is_playing()
-			var whole := int(ceil(time_left))
-			if whole != last_whole_second and is_playing():
-				sfx.play("tick")
-			last_whole_second = whole
+	if active_module != null:
+		text = UI.format_time(side_time_left)
+		color = UI.AMBER
+		if side_time_left <= 20.0:
+			color = UI.BAD
+			if side_time_left <= 10.0:
+				# blink + tick every second in the last 10 seconds
+				shown = fmod(side_time_left, 1.0) > 0.3 or not is_playing()
+				var whole := int(ceil(side_time_left))
+				if whole != last_whole_second and is_playing():
+					sfx.play("tick")
+				last_whole_second = whole
 
+	for ghost in [hud_ghost, display_ghost]:
+		if ghost != null:
+			ghost.visible = active_module != null
 	for label in [timer_label, display_timer_label]:
 		if label == null:
 			continue
@@ -548,7 +694,7 @@ func _build_display_face() -> void:
 	UI.caps(band, "Title", "VAULT CONTROL", 52, UI.AMBER, HORIZONTAL_ALIGNMENT_CENTER, 0, 0, 1, 1, 8)
 	var screen := UI.panel(t, "TimerScreen", UI.DARK, 0.06, 0.44, 0.94, 0.82, 24, UI.AMBER_DIM, 6)
 	# Dim "88:88" behind the digits: looks like a real segment display.
-	UI.text(screen, "Ghost", "88:88", 250, Color(UI.AMBER, 0.07), HORIZONTAL_ALIGNMENT_CENTER, 0, 0, 1, 1, true)
+	display_ghost = UI.text(screen, "Ghost", "88:88", 250, Color(UI.AMBER, 0.07), HORIZONTAL_ALIGNMENT_CENTER, 0, 0, 1, 1, true)
 	display_timer_label = UI.text(screen, "Timer", "00:00", 250, UI.AMBER, HORIZONTAL_ALIGNMENT_CENTER, 0, 0, 1, 1, true)
 	UI.caps(t, "StrikesCaption", "STRIKES", 40, UI.MUTED, HORIZONTAL_ALIGNMENT_CENTER, 0.04, 0.33, 0.96, 0.40, 8)
 	display_strike_lights.clear()
@@ -600,6 +746,14 @@ func _build_ui() -> void:
 	_build_settings_screen()
 	_build_howto_screen() # on top of everything
 
+	# Performance overlay (Settings -> PERF MONITOR), just under the HUD bar.
+	perf = PerfMonitor.new()
+	perf.name = "PerfMonitor"
+	perf.game = self
+	perf.vault = vault
+	UI.place(safe_root, perf, 0.02, 0.808, 0.98, 0.898)
+	perf.visible = false
+
 	flash_rect = UI.rect(self, "FlashOverlay", Color(1, 0, 0, 0), 0, 0, 1, 1)
 
 
@@ -628,10 +782,6 @@ func _build_menu_screen() -> void:
 	UI.caps(t, "Tagline", "CO-OP HEIST PUZZLE  •  2 PLAYERS", 28, UI.MUTED, HORIZONTAL_ALIGNMENT_CENTER, 0.03, 0.945, 0.97, 0.975, 5)
 	UI.text(t, "Title", "VAULT", 170, UI.TEXT, HORIZONTAL_ALIGNMENT_CENTER, 0.03, 0.855, 0.97, 0.945, true)
 	UI.caps(t, "Title2", "PROTOCOL", 74, UI.AMBER, HORIZONTAL_ALIGNMENT_CENTER, 0.03, 0.815, 0.97, 0.86, 26)
-	var stamp := UI.panel(t, "Stamp", Color(0.6, 0.1, 0.1, 0.15), 0.71, 0.908, 0.985, 0.938, 10, Color(0.9, 0.25, 0.25, 0.85), 4)
-	UI.caps(stamp, "Text", "TOP SECRET", 24, Color(1.0, 0.4, 0.4), HORIZONTAL_ALIGNMENT_CENTER, 0, 0, 1, 1, 4)
-	stamp.rotation = deg_to_rad(12.0)
-	UI.text(t, "Roles", "The Operator holds the phone  •  the Expert reads the manual", 26, UI.MUTED, HORIZONTAL_ALIGNMENT_CENTER, 0.03, 0.782, 0.97, 0.812)
 
 	# (the 3D vault spins here, between the logo and the buttons)
 
@@ -644,7 +794,8 @@ func _build_menu_screen() -> void:
 		var y_max := 0.415 - i * 0.112
 		_mission_card(t, i, y_max - 0.1, y_max)
 
-	UI.caps(t, "Footer", "MANUAL REV. 1.2   •   MT-2401   •   PROTOTYPE", 22, Color(UI.MUTED, 0.7), HORIZONTAL_ALIGNMENT_CENTER, 0.03, 0.012, 0.97, 0.045, 3)
+	var version := str(ProjectSettings.get_setting("application/config/version", "0.4"))
+	UI.caps(t, "Footer", "VERSION %s   •   MANUAL REV. 1.3   •   MT-2401" % version, 22, Color(UI.MUTED, 0.7), HORIZONTAL_ALIGNMENT_CENTER, 0.03, 0.012, 0.97, 0.045, 3)
 
 
 func _mission_card(parent: Control, index: int, y_min: float, y_max: float) -> void:
@@ -678,13 +829,11 @@ func _mission_card(parent: Control, index: int, y_min: float, y_max: float) -> v
 	if m["has_word_lock"]:
 		names.append("WORDS")
 	var modules_text := "  •  ".join(PackedStringArray(names))
-	UI.caps(b, "Modules", modules_text, 24, UI.MUTED, HORIZONTAL_ALIGNMENT_LEFT, 0.25, 0.12, 0.80, 0.46, 3)
-	UI.text(b, "Time", UI.format_time(m["time_limit"]), 50, UI.AMBER, HORIZONTAL_ALIGNMENT_RIGHT, 0.72, 0.46, 0.95, 0.92, true)
-	# difficulty: 1, 2 or 3 of 3 lights
-	for k in 3:
-		var x := 0.80 + k * 0.05
-		var pip := UI.circle(b, "Pip%d" % k, UI.AMBER if k <= index else UI.SOCKET, x, 0.16, x + 0.035, 0.40)
-		pip.set_border_width_all(0)
+	UI.caps(b, "Modules", modules_text, 24, UI.MUTED, HORIZONTAL_ALIGNMENT_LEFT, 0.25, 0.12, 0.74, 0.46, 3)
+	# best time (saved on the phone)
+	var best := UI.text(b, "Best", "--:--", 50, UI.SOCKET, HORIZONTAL_ALIGNMENT_RIGHT, 0.70, 0.46, 0.95, 0.92, true)
+	var best_caption := UI.caps(b, "BestCaption", "NOT CLEARED", 20, UI.MUTED, HORIZONTAL_ALIGNMENT_RIGHT, 0.66, 0.14, 0.95, 0.44, 3)
+	mission_records.append([best, best_caption])
 
 
 func _build_game_screen() -> void:
@@ -700,25 +849,24 @@ func _build_game_screen() -> void:
 	UI.rect(pause_button, "BarLeft", UI.TEXT, 0.33, 0.30, 0.44, 0.76) # the pause sign
 	UI.rect(pause_button, "BarRight", UI.TEXT, 0.56, 0.30, 0.67, 0.76)
 	var timer_box := UI.panel(t, "TimerBox", UI.DARK, 0.255, 0.915, 0.615, 0.99, 18, UI.AMBER_DIM, 3)
-	UI.text(timer_box, "Ghost", "88:88", 84, Color(UI.AMBER, 0.07), HORIZONTAL_ALIGNMENT_CENTER, 0, 0, 1, 1, true)
+	hud_ghost = UI.text(timer_box, "Ghost", "88:88", 84, Color(UI.AMBER, 0.07), HORIZONTAL_ALIGNMENT_CENTER, 0, 0, 1, 1, true)
 	timer_label = UI.text(timer_box, "Timer", "00:00", 84, UI.AMBER, HORIZONTAL_ALIGNMENT_CENTER, 0, 0, 1, 1, true)
 	var strike_block := UI.area(t, "Strikes", 0.645, 0.92, 0.975, 0.985)
 	for i in MAX_STRIKES:
 		var x := float(i) / MAX_STRIKES
 		strike_lights.append(UI.led(strike_block, "StrikeLight%d" % (i + 1), x + 0.05, 0.10, x + 1.0 / MAX_STRIKES - 0.05, 0.90, 5))
 
-	# --- Mission name + progress under the header ---
-	mission_label = UI.caps(t, "MissionName", "", 24, UI.MUTED, HORIZONTAL_ALIGNMENT_LEFT, 0.04, 0.872, 0.64, 0.902, 3)
-	disarmed_label = UI.caps(t, "Disarmed", "", 24, UI.MUTED, HORIZONTAL_ALIGNMENT_RIGHT, 0.60, 0.872, 0.96, 0.902, 3)
-
-	# --- HUD bottom: status log + hint ---
-	var status_box := UI.panel(t, "StatusBox", Color(UI.PANEL_DARK, 0.94), 0.03, 0.072, 0.97, 0.172, 22, UI.LINE, 2)
-	status_style = status_box.get_meta("style")
-	status_style.border_width_left = 12
+	# --- HUD bottom: one short message that fades after a few seconds ---
+	# (v0.4: the mission/progress row, the OPERATOR LOG caption and the hint
+	# line were removed to keep the screen simple; the vault itself shows the
+	# mission name, and every sealed side says TAP TO OPEN.)
+	var box := UI.panel(t, "StatusBox", Color(UI.PANEL_DARK, 0.94), 0.04, 0.03, 0.96, 0.105, 22, UI.LINE, 2)
+	status_box = box
+	status_style = box.get_meta("style")
 	status_style.border_color = UI.AMBER
-	UI.caps(status_box, "Caption", "OPERATOR LOG", 20, UI.MUTED, HORIZONTAL_ALIGNMENT_LEFT, 0.05, 0.70, 0.9, 0.94, 4)
-	status_label = UI.text(status_box, "Status", "", 34, UI.TEXT, HORIZONTAL_ALIGNMENT_LEFT, 0.05, 0.05, 0.97, 0.72, true)
-	UI.text(t, "Hint", "Drag to turn the vault  •  Tap a module to use it", 28, UI.MUTED, HORIZONTAL_ALIGNMENT_CENTER, 0.03, 0.015, 0.97, 0.06)
+	status_style.set_border_width_all(3)
+	status_label = UI.text(box, "Status", "", 34, UI.TEXT, HORIZONTAL_ALIGNMENT_CENTER, 0.04, 0.06, 0.96, 0.94, true)
+	status_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 
 
 func _build_result_screen() -> void:
@@ -733,17 +881,18 @@ func _build_result_screen() -> void:
 	result_flavor = UI.text(card, "Flavor", "", 36, UI.TEXT, HORIZONTAL_ALIGNMENT_CENTER, 0.06, 0.70, 0.94, 0.79)
 
 	# Three stat boxes
-	var stats := [["TIME LEFT", "Time"], ["STRIKES", "Strikes"], ["MODULES", "Modules"]]
+	var stats := [["TIME", "Time"], ["STRIKES", "Strikes"], ["SIDES", "Modules"]]
 	var value_labels := []
 	for i in 3:
 		var x := 0.05 + i * 0.31
-		var box := UI.panel(card, stats[i][1] + "Box", UI.PANEL_DARK, x, 0.47, x + 0.28, 0.66, 20, UI.LINE, 2)
+		var box := UI.panel(card, stats[i][1] + "Box", UI.PANEL_DARK, x, 0.50, x + 0.28, 0.68, 20, UI.LINE, 2)
 		value_labels.append(UI.text(box, "Value", "", 58, UI.TEXT, HORIZONTAL_ALIGNMENT_CENTER, 0.02, 0.32, 0.98, 0.95, true))
 		UI.caps(box, "Caption", stats[i][0], 20, UI.MUTED, HORIZONTAL_ALIGNMENT_CENTER, 0.02, 0.06, 0.98, 0.32, 3)
 	result_time = value_labels[0]
 	result_time.add_theme_color_override("font_color", UI.AMBER)
 	result_strikes = value_labels[1]
 	result_modules = value_labels[2]
+	result_record = UI.caps(card, "Record", "", 30, UI.AMBER, HORIZONTAL_ALIGNMENT_CENTER, 0.04, 0.435, 0.96, 0.485, 4)
 
 	retry_button = UI.button(card, "RetryButton", "RETRY", 46, UI.AMBER, UI.DARK, 0.07, 0.315, 0.93, 0.425, func(): start_mission(mission_index))
 	next_mission_button = UI.button(card, "NextMissionButton", "NEXT MISSION", 46, UI.GOOD, UI.DARK, 0.07, 0.185, 0.93, 0.295, func(): start_mission(mission_index + 1))
@@ -769,19 +918,23 @@ func _build_pause_screen() -> void:
 
 func _build_settings_screen() -> void:
 	settings_screen = UI.rect(safe_root, "SettingsScreen", Color(0.02, 0.03, 0.04, 0.88), 0, 0, 1, 1, true)
-	var card := UI.panel(settings_screen, "Card", UI.PANEL, 0.05, 0.24, 0.95, 0.76, 32, UI.AMBER_DIM, 3)
-	UI.caps(card, "Caption", "VAULT PROTOCOL", 24, UI.MUTED, HORIZONTAL_ALIGNMENT_CENTER, 0.04, 0.90, 0.96, 0.95, 6)
-	UI.text(card, "Title", "SETTINGS", 80, UI.TEXT, HORIZONTAL_ALIGNMENT_CENTER, 0.04, 0.78, 0.96, 0.90, true)
-	sound_toggle = _settings_row(card, "SOUND", "Beeps, ticks and the alarm", 0.63, 0.75, _toggle_sound)
-	vibration_toggle = _settings_row(card, "VIBRATION", "The phone buzzes on a strike", 0.49, 0.61, _toggle_vibration)
-	UI.rect(card, "SpinLine", UI.LINE, 0.07, 0.468, 0.93, 0.471)
-	UI.caps(card, "SpinTitle", "SPIN SPEED", 32, UI.TEXT, HORIZONTAL_ALIGNMENT_LEFT, 0.07, 0.405, 0.65, 0.455, 4)
-	UI.text(card, "SpinNote", "How fast the vault turns under your finger", 26, UI.MUTED, HORIZONTAL_ALIGNMENT_LEFT, 0.07, 0.355, 0.95, 0.405)
+	var card := UI.panel(settings_screen, "Card", UI.PANEL, 0.05, 0.14, 0.95, 0.86, 32, UI.AMBER_DIM, 3)
+	UI.caps(card, "Caption", "VAULT PROTOCOL", 24, UI.MUTED, HORIZONTAL_ALIGNMENT_CENTER, 0.04, 0.925, 0.96, 0.965, 6)
+	UI.text(card, "Title", "SETTINGS", 80, UI.TEXT, HORIZONTAL_ALIGNMENT_CENTER, 0.04, 0.835, 0.96, 0.925, true)
+	sound_toggle = _settings_row(card, "SOUND", "Beeps, ticks and the alarm", 0.72, 0.81, _toggle_sound)
+	vibration_toggle = _settings_row(card, "VIBRATION", "The phone buzzes on a strike", 0.60, 0.69, _toggle_vibration)
+	UI.caps(card, "SpinTitle", "SPIN SPEED", 32, UI.TEXT, HORIZONTAL_ALIGNMENT_LEFT, 0.07, 0.535, 0.65, 0.575, 4)
+	UI.text(card, "SpinNote", "How fast the vault turns under your finger", 26, UI.MUTED, HORIZONTAL_ALIGNMENT_LEFT, 0.07, 0.50, 0.95, 0.535)
 	spin_buttons.clear()
 	for i in GameSettings.SPIN_NAMES.size():
 		var x := 0.07 + i * 0.29
-		spin_buttons.append(UI.button(card, "Spin%d" % i, GameSettings.SPIN_NAMES[i], 30, UI.PANEL_LIGHT, UI.TEXT, x, 0.235, x + 0.27, 0.33, _set_spin_speed.bind(i), 18))
-	UI.button(card, "DoneButton", "DONE", 46, UI.AMBER, UI.DARK, 0.07, 0.06, 0.93, 0.17, close_settings)
+		spin_buttons.append(UI.button(card, "Spin%d" % i, GameSettings.SPIN_NAMES[i], 30, UI.PANEL_LIGHT, UI.TEXT, x, 0.405, x + 0.27, 0.48, _set_spin_speed.bind(i), 18))
+	UI.rect(card, "SpinLine", UI.LINE, 0.07, 0.383, 0.93, 0.386)
+	perf_toggle = _settings_row(card, "PERF MONITOR", "FPS and frame time on screen (for tests)", 0.27, 0.36, _toggle_perf_monitor)
+	reset_records_button = _settings_row(card, "RECORDS", "Delete the saved best times", 0.15, 0.24, _reset_records_pressed)
+	reset_records_button.text = "RESET"
+	UI.restyle_button(reset_records_button, UI.PANEL_LIGHT, UI.TEXT, 18)
+	UI.button(card, "DoneButton", "DONE", 46, UI.AMBER, UI.DARK, 0.07, 0.03, 0.93, 0.115, close_settings)
 	settings_screen.visible = false
 
 
@@ -843,8 +996,8 @@ func _howto_controls(area: Control) -> Control:
 	var p := UI.area(area, "Controls", 0, 0, 1, 1)
 	UI.text(p, "Title", "TOUCH\nCONTROLS", 66, UI.TEXT, HORIZONTAL_ALIGNMENT_LEFT, 0.01, 0.84, 0.99, 1.0, true)
 	var rows := [
-		["DRAG", "Turn the vault. Let go and it turns to the nearest side."],
-		["TAP", "Cut a wire, press a key or a word button."],
+		["DRAG", "Turn the vault. It locks while a side is open."],
+		["TAP", "Open a side. Cut a wire, press a key or a word."],
 		["HOLD", "Keep pressing the big button. Let go on the right number."],
 		["PINCH", "Two fingers zoom in and out."],
 		["PAUSE", "The pause button is at the top left. The vault hides while paused."],
@@ -864,11 +1017,11 @@ func _howto_rules(area: Control) -> Control:
 	var p := UI.area(area, "Rules", 0, 0, 1, 1)
 	UI.text(p, "Title", "DISARM\nTHE VAULT", 66, UI.TEXT, HORIZONTAL_ALIGNMENT_LEFT, 0.01, 0.84, 0.99, 1.0, true)
 	var rules := [
-		[UI.AMBER, "Disarm every module before the timer runs out."],
-		[UI.BAD, "A wrong action is a STRIKE. Three strikes and the alarm goes off."],
-		[UI.GOOD, "Every side has a status light: red = armed, green = disarmed."],
-		[UI.TEXT, "The VAULT ID is on top of the vault. Spell words letter by letter: STEEL is not STEAL!"],
-		[UI.AMBER, "Three missions: Training Safe, Bank Vault and Central Reserve."],
+		[UI.AMBER, "Every side has its own timer. Tap a side to open it: the vault locks until it is disarmed."],
+		[UI.BAD, "A side timer at 00:00 or three STRIKES set off the alarm."],
+		[UI.TEXT, "Read the VAULT ID on top BEFORE you open a side. Spell words: STEEL is not STEAL!"],
+		[UI.GOOD, "Status lights: red = sealed, amber = open, green = disarmed."],
+		[UI.AMBER, "Your best time for every mission is saved on the phone."],
 	]
 	for i in rules.size():
 		var y_max := 0.81 - i * 0.16

@@ -21,3 +21,7 @@ Demo.mp4
 
 # Submission folder (ZIP for the LMS, not part of the repo)
 Submission/
+
+# Godot editor files (re-created when the project is opened)
+*.uid
+*.import

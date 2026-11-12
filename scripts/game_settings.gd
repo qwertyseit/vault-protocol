@@ -5,6 +5,7 @@
 #   vibration    - phone vibration on a strike on/off
 #   spin_speed   - how fast the vault turns under the finger (0 slow, 1 normal, 2 fast)
 #   tutorial_seen - the How to play screen opens by itself only on the first start
+#   perf_monitor  - show the FPS / frame time overlay (for performance tests)
 # -----------------------------------------------------------------------------
 extends RefCounted
 
@@ -16,6 +17,7 @@ var sound := true
 var vibration := true
 var spin_speed := 1
 var tutorial_seen := false
+var perf_monitor := false
 
 
 func load_settings() -> void:
@@ -26,6 +28,7 @@ func load_settings() -> void:
 	vibration = cfg.get_value("device", "vibration", true)
 	spin_speed = clampi(cfg.get_value("controls", "spin_speed", 1), 0, SPIN_SPEEDS.size() - 1)
 	tutorial_seen = cfg.get_value("general", "tutorial_seen", false)
+	perf_monitor = cfg.get_value("general", "perf_monitor", false)
 
 
 func save_settings() -> void:
@@ -34,6 +37,7 @@ func save_settings() -> void:
 	cfg.set_value("device", "vibration", vibration)
 	cfg.set_value("controls", "spin_speed", spin_speed)
 	cfg.set_value("general", "tutorial_seen", tutorial_seen)
+	cfg.set_value("general", "perf_monitor", perf_monitor)
 	cfg.save(PATH)
 
 

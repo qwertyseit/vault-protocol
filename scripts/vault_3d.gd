@@ -11,6 +11,10 @@
 #                         so buttons, wires and keys work like normal UI
 #   * two fingers      -> pinch to zoom (mouse wheel on a PC)
 # After a spin the vault turns so the nearest side faces the screen, upright.
+#
+# v0.4: while a side is open the vault is LOCKED (it cannot be turned until
+# that side is disarmed), and only the sides that face the camera are redrawn
+# every frame (the sides at the back keep their last picture).
 # -----------------------------------------------------------------------------
 extends Node3D
 
@@ -45,8 +49,16 @@ const FACE_DIRS := [
 	[Vector3(0, -1, 0), Vector3(0, 0, 1)], # BOTTOM
 ]
 
+## Emitted when the player tries to turn the vault while it is locked.
+signal rotation_blocked
+
 ## Turn off while the result screen / menu is shown.
 var interactive := false
+## true while a side is open: dragging does not turn the vault.
+var locked := false
+## Performance test switch: true = redraw all 6 sides every frame (the old
+## v0.3 behaviour), false = redraw only the sides that face the camera.
+var redraw_all_faces := false
 ## Radians per pixel of dragging (changed in Settings).
 var rotate_speed := ROTATE_SPEED
 
@@ -74,6 +86,8 @@ var _last_move_time := 0.0
 var _velocity := Vector2.ZERO
 var _snapping := false
 var _snap_target := Quaternion.IDENTITY
+var _active := false # face screens are being redrawn (during a mission)
+var _blocked_sent := false # rotation_blocked is sent once per drag
 
 var _metal: StandardMaterial3D
 var _dark_metal: StandardMaterial3D
@@ -109,10 +123,43 @@ func clear_faces() -> void:
 ## Redraw the face screens every frame (during a mission). false = keep the
 ## last picture and stop redrawing (menu / result screen, saves battery).
 func set_active(active: bool) -> void:
+	_active = active
 	for f in faces:
 		var vp: SubViewport = f["viewport"]
 		if vp != null:
 			vp.render_target_update_mode = SubViewport.UPDATE_ALWAYS if active else SubViewport.UPDATE_ONCE
+	if active:
+		_update_face_redraw()
+
+
+## How many side screens are redrawn every frame right now (shown by the
+## performance monitor).
+func redrawn_faces() -> int:
+	if not _active:
+		return 0
+	var n := 0
+	for f in faces:
+		var vp: SubViewport = f["viewport"]
+		if vp != null and vp.render_target_update_mode == SubViewport.UPDATE_ALWAYS:
+			n += 1
+	return n
+
+
+## Only the sides that can be seen need a new picture every frame.
+func _update_face_redraw() -> void:
+	var cam_pos := camera.global_position
+	for f in faces:
+		var vp: SubViewport = f["viewport"]
+		if vp == null:
+			continue
+		var node := f["node"] as Node3D
+		var normal := node.global_transform.basis.z.normalized()
+		var to_cam := (cam_pos - node.global_position).normalized()
+		# a small margin: a side starts redrawing just before it turns into view
+		var visible_now := redraw_all_faces or normal.dot(to_cam) > -0.15
+		var mode := SubViewport.UPDATE_ALWAYS if visible_now else SubViewport.UPDATE_DISABLED
+		if vp.render_target_update_mode != mode:
+			vp.render_target_update_mode = mode
 
 
 ## Menu mode: the vault floats higher, smaller, and slowly turns by itself.
@@ -135,6 +182,13 @@ func set_showcase(on: bool) -> void:
 ## Hide / show the vault itself (the game hides it while paused).
 func set_vault_hidden(hidden: bool) -> void:
 	box.visible = not hidden
+
+
+## Turn the vault so this side faces the screen straight (used when a side opens).
+func snap_to_face(face: int) -> void:
+	_velocity = Vector2.ZERO
+	_snap_target = Quaternion(_face_basis(face)).normalized()
+	_snapping = true
 
 
 ## Forget the finger that is on the screen (used when the game is paused).
@@ -256,6 +310,7 @@ func _finger_span() -> float:
 func _on_press(pos: Vector2) -> void:
 	if _pinching:
 		return
+	_blocked_sent = false
 	_touch = Touch.PENDING
 	_press_pos = pos
 	_last_pos = pos
@@ -273,6 +328,13 @@ func _on_move(pos: Vector2) -> void:
 		# The player wanted to spin, not to press: cancel the press first.
 		_cancel_panel_press()
 		_touch = Touch.ROTATE
+	if _touch == Touch.ROTATE and locked:
+		# A side is open: the vault stays where it is.
+		if not _blocked_sent and pos.distance_to(_press_pos) > DRAG_THRESHOLD * 2.0:
+			_blocked_sent = true
+			rotation_blocked.emit()
+		_last_pos = pos
+		return
 	if _touch == Touch.ROTATE:
 		var rel := pos - _last_pos
 		_rotate_by(rel)
@@ -327,7 +389,12 @@ func _process(delta: float) -> void:
 		else:
 			_touch = Touch.ROTATE # pressed on the metal case: just spin
 
+	if _active:
+		_update_face_redraw()
+
 	# Inertia after a fast swipe, then snap to the nearest side.
+	if locked:
+		_velocity = Vector2.ZERO
 	if _touch == Touch.NONE and not _snapping and _velocity.length() > 0.0:
 		_rotate_by(_velocity * delta)
 		_velocity *= exp(-5.0 * delta)
@@ -373,8 +440,13 @@ func _snapped_basis(b: Basis) -> Basis:
 		if normal_now.z > best_dot: # +Z points to the camera
 			best_dot = normal_now.z
 			best_face = i
-	var n: Vector3 = FACE_DIRS[best_face][0]
-	var up: Vector3 = FACE_DIRS[best_face][1]
+	return _face_basis(best_face)
+
+
+## Rotation that shows the given side straight on, upright, slightly tilted.
+func _face_basis(face: int) -> Basis:
+	var n: Vector3 = FACE_DIRS[face][0]
+	var up: Vector3 = FACE_DIRS[face][1]
 	# Face frame (right, up, normal) must become (screen right, screen up, to camera),
 	# so the cube rotation is the inverse of that frame.
 	var straight := Basis(up.cross(n), up, n).transposed()
@@ -665,7 +737,7 @@ func _build_sticker(parent: Control) -> void:
 	var band := UI.rect(paper, "TitleBand", ink, 0, 0.80, 1, 1)
 	UI.text(band, "Title", "VAULT PROTOCOL", 92, paper_color, HORIZONTAL_ALIGNMENT_CENTER, 0.03, 0, 0.97, 1, true)
 
-	UI.text(paper, "Model", "MODEL MT-2401   •   REV 1.2", 48, ink, HORIZONTAL_ALIGNMENT_CENTER, 0.04, 0.68, 0.96, 0.77, true)
+	UI.text(paper, "Model", "MODEL MT-2401   •   REV 1.3", 48, ink, HORIZONTAL_ALIGNMENT_CENTER, 0.04, 0.68, 0.96, 0.77, true)
 	UI.rect(paper, "Line1", ink, 0.08, 0.655, 0.92, 0.662)
 	UI.text(paper, "Hint", "VAULT ID IS ON THE TOP PANEL", 44, ink, HORIZONTAL_ALIGNMENT_CENTER, 0.04, 0.55, 0.96, 0.64)
 
