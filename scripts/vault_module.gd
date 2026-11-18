@@ -7,10 +7,11 @@
 #   3) calls solve(...) or strike(...). The GameManager handles the rest
 #      (strike counter, sounds, status message, win/lose).
 #
-# Side timers (v0.4): during a mission every module starts SEALED behind a
-# shutter that shows its name and its time. Tapping the shutter asks the
-# GameManager to open the side: the side timer starts and the vault locks on
-# this side until the module is disarmed.
+# Side timers: during a mission every module starts SEALED behind a shutter
+# that shows its name and its time. Tapping the shutter asks the GameManager
+# to open the side: the side timer starts and keeps running even when the
+# vault is turned to another side (v0.5). A small timer in the bottom-left
+# corner of the open side shows how much time this side has left.
 # To add a new module: create a script that extends this one.
 # -----------------------------------------------------------------------------
 extends Control
@@ -25,8 +26,13 @@ var rng: RandomNumberGenerator
 var is_solved := false
 var is_open := true # false while the shutter covers the module
 var side_time := 0.0 # seconds this side gets once it is opened
+var time_left := 0.0 # counts down while the side is open (set by the GameManager)
 
 var _shutter: Button
+var _hint_label: Label
+var _timer_chip: Control
+var _timer_label: Label
+var _shown_second := -1
 
 
 ## Called once by the GameManager right after the module is created.
@@ -62,6 +68,8 @@ func solve(message: String) -> void:
 	if is_solved:
 		return
 	is_solved = true
+	if _timer_chip != null:
+		_timer_chip.visible = false
 	_show_disarmed_banner()
 	game.on_module_solved(self, message)
 
@@ -74,7 +82,8 @@ func strike(message: String) -> void:
 func create_header(title: String, hint: String) -> Label:
 	var band := UI.panel(self, "TitleBand", Color(0, 0, 0, 0.35), 0.08, 0.905, 0.92, 0.985, 16)
 	UI.caps(band, "Title", title, 38, UI.AMBER, HORIZONTAL_ALIGNMENT_CENTER, 0.02, 0, 0.98, 1, 5)
-	return UI.text(self, "Hint", hint, 34, UI.MUTED, HORIZONTAL_ALIGNMENT_CENTER, 0.04, 0.01, 0.96, 0.08)
+	_hint_label = UI.text(self, "Hint", hint, 34, UI.MUTED, HORIZONTAL_ALIGNMENT_CENTER, 0.04, 0.01, 0.96, 0.08)
+	return _hint_label
 
 
 # =============================================================================
@@ -120,6 +129,14 @@ func _on_shutter_tapped() -> void:
 ## Called by the GameManager: the shutter slides up and the module can be used.
 func open_side() -> void:
 	is_open = true
+	time_left = side_time
+	# the side's own timer sits in the hint line, the hint moves to the right
+	_timer_chip = UI.panel(self, "SideTimer", UI.DARK, 0.03, 0.012, 0.25, 0.078, 14, UI.AMBER_DIM, 3)
+	_timer_label = UI.text(_timer_chip, "Time", UI.format_time(time_left), 44, UI.AMBER, HORIZONTAL_ALIGNMENT_CENTER, 0, 0, 1, 1, true)
+	if _hint_label != null:
+		_hint_label.anchor_left = 0.28
+		_hint_label.anchor_right = 0.97
+		_hint_label.add_theme_font_size_override("font_size", 29)
 	if _shutter == null:
 		return
 	var s := _shutter
@@ -130,6 +147,19 @@ func open_side() -> void:
 	tw.tween_property(s, "position:y", s.position.y - s.size.y, 0.35).set_ease(Tween.EASE_IN).set_trans(Tween.TRANS_QUAD)
 	tw.tween_property(s, "modulate:a", 0.0, 0.35)
 	tw.chain().tween_callback(s.queue_free)
+
+
+## The side's own timer (bottom-left corner of the open side). The label is
+## changed only when the shown second changes.
+func show_time_left() -> void:
+	if _timer_label == null:
+		return
+	var whole := int(ceil(time_left))
+	if whole == _shown_second:
+		return
+	_shown_second = whole
+	_timer_label.text = UI.format_time(time_left)
+	_timer_label.add_theme_color_override("font_color", UI.BAD if time_left <= 20.0 else UI.AMBER)
 
 
 ## Dims the module and slams a green "DISARMED" stamp on it.

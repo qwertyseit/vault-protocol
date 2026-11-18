@@ -7,8 +7,9 @@ A bank-vault heist for two: the **Operator** holds the phone with a 3D vault, th
 ## How to play
 
 - **Operator** — holds the phone, turns the vault, describes what is on each side and does the actions.
-- **Expert** — opens [`Manual/Vault_Protocol_Manual_v1.3.pdf`](Manual/Vault_Protocol_Manual_v1.3.pdf) on a second device, finds the right rule and says what to do.
-- **Side timers:** every module is sealed. Tap a side to open it: its own timer starts and the vault **locks** on that side until it is disarmed. A side timer at 00:00 or **3 strikes = alarm = mission failed**.
+- **Expert** — opens [`Manual/Vault_Protocol_Manual_v1.4.pdf`](Manual/Vault_Protocol_Manual_v1.4.pdf) on a second device, finds the right rule and says what to do.
+- **Side timers:** every module is sealed. Tap a side to open it: its own timer starts. You can turn to another side and open it too — **every open timer keeps counting down**, so you decide whether to finish the current puzzle or leave its timer running. Any open side at 00:00 or **3 strikes = alarm = mission failed**.
+- **Music:** quiet background music made in code; the heartbeat speeds up as the most urgent open timer runs out (can be turned off in Settings).
 - **Records:** the best clear time of every mission is saved on the phone and shown on the menu.
 
 | Mission | Modules | Side timers |
@@ -17,19 +18,19 @@ A bank-vault heist for two: the **Operator** holds the phone with a 3D vault, th
 | 02 · Bank Vault | Wires (4–5) + Override Button + Symbol Keypad | 1:30, Keypad 2:00 |
 | 03 · Central Reserve | Wires (4–5) + Override Button + Symbol Keypad + Word Lock | 1:15, Keypad 1:45, Word Lock 3:00 |
 
-The modules sit on the sides of the vault: front = timer and strike lights, right = Wires, back = Override Button, left = Symbol Keypad, top = Vault ID plate (the Expert needs it for most rules), bottom = Word Lock (Mission 3: a screen word and six word buttons that sound alike — STEEL / STEAL, CASH / CACHE — so everything has to be spelled).
+The front of the vault shows the most urgent open timer (with the side's name) and the strike lights; the top carries the Vault ID plate (the Expert needs it for most rules). The modules go to **random sides** (right, back, left, bottom) on every vault, so the Operator has to search for them. The Word Lock (Mission 3) has a screen word and six word buttons that sound alike — STEEL / STEAL, CASH / CACHE — so everything has to be spelled.
 
 ## Controls
 
 | Gesture | Action |
 |---|---|
-| Drag with one finger | Turn the vault in any direction; it settles on the nearest side, upright. Locked while a side is open |
+| Drag with one finger | Turn the vault in any direction, also while sides are open; it settles on the nearest side, upright |
 | Tap | Open a sealed side; cut a wire, press a keypad key or a word button, tap the button |
 | Press and hold | Hold the Override Button, let go on the right number of the PIN counter |
 | Pinch with two fingers | Zoom (mouse wheel on a PC) |
 | Pause button / Android back button | Pause: resume, restart, settings, main menu. The game also pauses by itself when the app goes to the background |
 
-The menu also has **How to play** (opens by itself on the first start) and **Settings**: sound, vibration, spin speed (saved on the phone), **Perf monitor** (FPS, frame time and draw calls on screen, used for the performance test) and **Reset records**.
+The menu also has **How to play** (opens by itself on the first start) and **Settings**: sound, music, vibration, spin speed (saved on the phone), **Perf monitor** (FPS, frame time and draw calls on screen, used for the performance test) and **Reset records**.
 
 ## Running the project
 
@@ -63,6 +64,7 @@ scripts/
   mission_data.gd      settings of the three missions
   ui_factory.gd        UI helpers and colors
   sound_fx.gd          sound effects generated in code
+  tension_music.gd     background music generated in code (drone, heartbeat, tense layer)
 Manual/                the Expert's technical manual (PDF)
 ```
 
@@ -73,4 +75,4 @@ Manual/                the Expert's technical manual (PDF)
 | **Adilseit Tuiyebay** | Game development | Godot project, gameplay code, 3D vault and touch input, UI and feedback, Android build |
 | **Artemiy Kim** | Game design and documentation | Puzzle rules and mission balance, the Expert's technical manual (PDF), README and other documents, demo video, playtesting |
 
-Versions: Assignment 2 — tag [`v0.2-a2`](https://github.com/qwertyseit/vault-protocol/tree/v0.2-a2). Assignment 3 — release [`v0.3-a3`](https://github.com/qwertyseit/vault-protocol/releases/tag/v0.3-a3) (pause, settings, How to play, Mission 3 with the Word Lock). Assignment 4 — release `v0.4-a4`, Android build 0.4 (side timers, simpler HUD, mission records, performance monitor, manual rev. 1.3).
+Versions: Assignment 2 — tag [`v0.2-a2`](https://github.com/qwertyseit/vault-protocol/tree/v0.2-a2). Assignment 3 — release [`v0.3-a3`](https://github.com/qwertyseit/vault-protocol/releases/tag/v0.3-a3) (pause, settings, How to play, Mission 3 with the Word Lock). Assignment 4 — release [`v0.4-a4`](https://github.com/qwertyseit/vault-protocol/releases/tag/v0.4-a4), Android build 0.4 (side timers, simpler HUD, mission records, performance monitor, manual rev. 1.3). Final — build 0.5 (parallel side timers without the lock, intensifying music, random module positions, manual rev. 1.4).
